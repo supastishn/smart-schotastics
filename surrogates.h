@@ -156,6 +156,7 @@ public:
 
 #ifndef NN_IMPORTED
 // TODO: IMPORT THINGS
+// Yes I made the NN lib but I'm too lazy to implement it :sob: 
 class NeuralNetwork : public SurrogateModel {
 public:
     void train(const std::vector<double>& samples, const std::vector<double>& costs, int num_samples) override {
@@ -168,7 +169,48 @@ public:
 };
 #endif
 
-class PiecewiseLinearModel : public SurrogateModel {
+// Mls
+class PiecewisePolynomialModel : public SurrogateModel {
+	private:
+	int polynomial_degree;
+	int max_points_per_polynomial;
+	vector<double> trainingSamples;
+	vector<double> costs;
+	int trainingDim;
+	public:
 
+	PiecewisePolynomialModel(int degree, int max_points) : polynomial_degree(degree), max_points_per_polynomial(max_points) {}
+
+	void nDimensionalDistance(const std::vector<double>& a, const std::vector<double>& b) {
+	double sum = 0.0;
+	for (size_t i = 0; i < a.size(); ++i) {
+		double diff = a[i] - b[i];
+		sum += diff * diff;
+	}
+	return sqrt(sum);
+	}
+	void train(const std::vector<double>& samples, const std::vector<double>& costs) {
+	trainingSamples = samples;
+this->costs = costs;
+trainingDim = (int)(samples.size() / costs.size());
+
+	}
+
+	void predict(const std::vector<double>& question) {
+	std::vector<int> distances(costs.size());
+	for (int i = 0; i < costs.size(); ++i) {
+		std::vector<double> samplePoint(trainingDim);
+		for (int d = 0; d < trainingDim; ++d) {
+			samplePoint[d] = trainingSamples[i * trainingDim + d];
+		}
+		distances[i] = nDimensionalDistance(samplePoint, question);
+	}
+
+
+
+	sort(distances.begin(), distances.end());
+	
+
+}
 
 #endif
