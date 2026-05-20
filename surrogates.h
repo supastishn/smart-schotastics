@@ -210,7 +210,9 @@ trainingDim = (int)(samples.size() / costs.size());
 
 	sort(distances.begin(), distances.end());
 	
-
+	// equations:
+	// dSum/dcoeffiecient_i = 2 * sum((a_0 + a_1 * x_1 .... + a_n * x_n) - y) * x_i = 0
+	
 }
 
 #endif
