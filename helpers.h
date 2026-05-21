@@ -13,30 +13,22 @@ double nDimensionalDistance(const std::vector<double>& points1, const std::vecto
 }
 //finally, a usecase for my CP knowledge
 // calcs sum of all products of pairs of size 1 to tuple_size
-double sumAllProductsOfTuplesUpTo(std::vector<double> arr, int tuple_size,) {
-	
-	vector<vector<double>> dp(tuple_size,0.0);
-	vector<vector<double>> suffixDP(tuple_size);
-	vector<int> sizeOfTuples(tuple_size);
-	for (int i = 0; i < tuple_size; ++i) {
-	
-	dp[i].resize( pow(arr.size(), i + 1) / factorial(i + 1));
-	suffixDP[i].resize( pow(arr.size(), i + 1) / factorial(i + 1));
-
-
-	
-
-	}
-
-
-	for (int i = arr.size(); i <= 0; ++i) {
-		dp[0][i] = arr[i];
-		suffixDP[0][i] = arr[i] + (i + 1 < arr.size() ? suffixDP[0][i + 1] : 0);
-	}
-	// dp[i] = sum of all products of tuples of size i-1
-	for (int i = 0; i < dp.size(); ++i) {
-	}
-	
-
+std::vector<double> sumAllProductsOfTuplesUpTo(const std::vector<double>& arr, int max_degree) {
+    int n = arr.size();
+    int effective_max = std::min(max_degree, n);
+    std::vector<std::vector<double>> dp(effective_max + 1, std::vector<double>(n + 1, 0.0));
+    for (int i = 0; i <= n; ++i) {
+        dp[0][i] = 1.0;
+    }
+    for (int k = 1; k <= effective_max; ++k) {
+        for (int i = n - 1; i >= 0; --i) {
+            dp[k][i] = dp[k][i + 1] + arr[i] * dp[k - 1][i + 1];
+        }
+    }
+    std::vector<double> result(max_degree, 0.0);
+    for (int k = 1; k <= effective_max; ++k) {
+        result[k - 1] = dp[k][0];
+    }
+    return result;
 }
 #endif
