@@ -2,6 +2,8 @@
 #define SURROGATES_IMPORTED
 #include <cmath>
 #include <vector>
+#include <algorithm>
+#include "helpers.h"
 class SurrogateModel {
 public:
     virtual ~SurrogateModel() = default;
@@ -90,7 +92,7 @@ public:
 	std::vector<double> z(num_samples);
 	z[0] = costs[0] / diagonal[0];
 	for (int col = 0; col < num_samples; ++col) {
-	    for (int row = 0; row < col; ++row) {
+	    for (int row = 0; row <= col; ++row) {
 		transformedCosts[row] -= chelovskyDP[row * num_samples + col] * z[col];
 	    }
 	    z[col] = transformedCosts[col] / diagonal[col];
@@ -127,7 +129,7 @@ public:
 	std::vector<double> transformedK = k;
 	std::vector<double> z(numSamplesStored);
 	for (int col = 0; col < numSamplesStored; ++col) {
-	    for (int row = 0; d < trainingDim; ++row) {
+	    for (int row = 0; row <= col; ++row) {
 		transformedK[row] -= chelovskyDP[row * numSamplesStored + col] * z[col];
 	    }
 	    z[col] = transformedK[col] / diagonal[col];
@@ -156,7 +158,7 @@ public:
 
 #ifndef NN_IMPORTED
 // TODO: IMPORT THINGS
-// Yes I made the NN lib but I'm too lazy to implement it :sob: 
+// Yes I made the NN lib but I'm too lazy to implement it here :sob: 
 class NeuralNetwork : public SurrogateModel {
 public:
     void train(const std::vector<double>& samples, const std::vector<double>& costs, int num_samples) override {
@@ -173,13 +175,13 @@ public:
 class PiecewisePolynomialModel : public SurrogateModel {
 	private:
 	int polynomial_degree;
-	int max_points_per_polynomial;
+	int points_per_polynomial;
 	vector<double> trainingSamples;
 	vector<double> costs;
 	int trainingDim;
 	public:
 
-	PiecewisePolynomialModel(int degree, int max_points) : polynomial_degree(degree), max_points_per_polynomial(max_points) {}
+	PiecewisePolynomialModel(int degree, int points) : polynomial_degree(degree), points_per_polynomial(points) {}
 
 	void nDimensionalDistance(const std::vector<double>& a, const std::vector<double>& b) {
 	double sum = 0.0;
@@ -209,9 +211,23 @@ trainingDim = (int)(samples.size() / costs.size());
 
 
 	sort(distances.begin(), distances.end());
+	// combinatorial: (n+d, d)
+	// col of matrix = variable, row = equation
+	// a0 * sum(x_i^1) + a1 * sum(x_i^2) + ... = sum(y_i*x_i)
+	std::vector<double> leastSquaresMatrix(points_per_polynomial * pioints_per_polynomial, 0.0)
+	std::vector<double> leastSquaresResults(points_per_polynomial, 0.0);
+	for (int row = 0; row < points_per_polynomial; ++row) {
+		for (int col = 0; col <= row; ++col) {
+			double sum = 0.0
+				for (int i = 0; i < points_per_polynomial; ++i) {
+					std::vector<double> sample(samples.begin() + distances[i] * trainingDim, samples.begin() + (distances[i] + 1) * trainingDim);
+
+				sum += sumAllProductsOfTuples(sample, col, 1) * sumAllProductsOfTuples(sample, row, 1);
+				} 
+		
+		}
+	}
 	
-	// equations:
-	// dSum/dcoeffiecient_i = 2 * sum((a_0 + a_1 * x_1 .... + a_n * x_n) - y) * x_i = 0
 	
 }
 

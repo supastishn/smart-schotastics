@@ -39,13 +39,13 @@ private:
     }
 public:
     Council(const std::vector<SurrogateModel*>& models, const RegionArgs& regionArgs)
-        : models(models), regionArgs(regionArgs), fx_arguments(0), softmaxBase(1.5) {}
+        : models(models), regionArgs(regionArgs), fx_arguments(0), softmaxBase(1.5), validationGravity(1.3) {}
     void setModels(const std::vector<SurrogateModel*>& newModels) {
         models = newModels;
-	validationGravity = 1.5
+
     }
-	
-    void predict(const std::vector<double>& question) {
+	// TODO: make this output variance too not just mean
+	double predict(const std::vector<double>& question) {
 	std::vector<double> predictions;
 	for (SurrogateModel* model : models) {
 	    double prediction = model->predict(question);	    
