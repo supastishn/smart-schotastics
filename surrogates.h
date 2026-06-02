@@ -218,14 +218,16 @@ trainingDim = (int)(samples.size() / costs.size());
 	std::vector<double> leastSquaresResults(points_per_polynomial, 0.0);
 	for (int row = 0; row < points_per_polynomial; ++row) {
 		for (int col = 0; col <= row; ++col) {
-			double sum = 0.0
+			double sum = 0
 				for (int i = 0; i < points_per_polynomial; ++i) {
 					std::vector<double> sample(samples.begin() + distances[i] * trainingDim, samples.begin() + (distances[i] + 1) * trainingDim);
-
-				sum += sumAllProductsOfTuples(sample, col, 1) * sumAllProductsOfTuples(sample, row, 1);
+				//a more efficient aporoach wpuld be to make a vector double of sums of all tuples beforehand. hkwever icslready coddd this and am now too lazy to refactir.
+				sum += sumAllProductsOfTuples(sample, col)[col - 1] * sumAllProductsOfTuples(sample, row)[row - 1];
 				} 
+			leastSquaresMatrix[row * points_per_polynomial + col] = sum;
 		
 		}
+		
 	}
 	
 	
