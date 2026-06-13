@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Settings - OptimaBay</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <nav>
+        <span class="brand">OptimaBay</span>
+        <a href="dashboard.html">Dashboard</a>
+        <a href="index.html">Experiments</a>
+        <a href="settings.html" class="active-tab">Settings</a>
+    </nav>
+    <main>
+        <h2 class="section-title">Settings</h2>
+        <div class="settings-panel">
+            <div class="form-group">
+                <label for="defaultDirection">Default Objective Direction</label>
+                <select id="defaultDirection">
+                    <option value="minimize">Minimize</option>
+                    <option value="maximize">Maximize</option>
+                </select>
+            </div>
+            <button class="btn btn-primary" id="saveSettingsButton">Save Settings</button>
+        </div>
+    </main>
+    <footer>
+        Experiment Optimizer &mdash; Internal Tool
+    </footer>
+    <script>
+        (function() {
+            const STORAGE_KEY_SETTINGS = 'settings';
+            function loadSettingsFromStorage() {
+                const raw = localStorage.getItem(STORAGE_KEY_SETTINGS);
+                if (!raw) return { defaultDirection: 'minimize' };
+                try {
+                    return JSON.parse(raw);
+                } catch (e) {
+                    return { defaultDirection: 'minimize' };
+                }
+            }
+            function saveSettingsToStorage(settings) {
+                localStorage.setItem(STORAGE_KEY_SETTINGS, JSON.stringify(settings));
+            }
+            function loadSettingsIntoForm() {
+                const settings = loadSettingsFromStorage();
+                const directionSelect = document.getElementById('defaultDirection');
+                if (directionSelect) directionSelect.value = settings.defaultDirection || 'minimize';
+            }
+            function saveSettings() {
+                const directionSelect = document.getElementById('defaultDirection');
+                const settings = loadSettingsFromStorage();
+                settings.defaultDirection = directionSelect.value;
+                saveSettingsToStorage(settings);
+                alert('Settings saved.');
+            }
+            document.addEventListener('DOMContentLoaded', function() {
+                loadSettingsIntoForm();
+                document.getElementById('saveSettingsButton').addEventListener('click', function(e) {
+                    e.preventDefault();
+                    saveSettings();
+                });
+            });
+        })();
+    </script>
+</body>
+</html>

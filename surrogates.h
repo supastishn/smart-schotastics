@@ -40,7 +40,7 @@ private:
     std::vector<double> similarityMatrix;
     std::vector<double> weights;
     std::vector<double> trainingSamples;
-    std::vector<double> chelovskyDP;
+    std::vector<double> choleskyDP;
     std::vector<double> diagonal;
     double priorVariance;
     int trainingDim;
@@ -52,63 +52,8 @@ public:
         trainingDim = (int)(samples.size() / num_samples);
         trainingSamples = samples;
         similarityMatrix.resize(num_samples * num_samples);
-	chelovskyDP.resize(num_samples * num_samples);
-        for (int i = 0; i < num_samples; ++i) {
-            for (int j = 0; j < num_samples; ++j) {
-                std::vector<double> x_i(trainingDim);
-                std::vector<double> x_j(trainingDim);
-                for (int d = 0; d < trainingDim; ++d) {
-                    x_i[d] = samples[i * trainingDim + d];
-                    x_j[d] = samples[j * trainingDim + d];
-                }
-                similarityMatrix[i * num_samples + j] = kernel->evaluate(x_i, x_j);
-            }
-        }
-
-
-        weights[0] = sqrt(similarityMatrix[0]);
-        for (int col = 0; col < num_samples; ++col) {
-            for (int row = col; row < num_samples; ++row) {
-                double sum = 0.0;
-                if (row == col) {
-                    for (int i = 0; i < row; ++i) {
-                        sum += chelovskyDP[row * num_samples + i] * chelovskyDP[row * num_samples + i];
-                    }
-                } else {
-                    for (int i = 0; i < col; ++i) {
-                        sum += chelovskyDP[row * num_samples + i] * chelovskyDP[col * num_samples + i];
-                    }
-                }
-                if (row == col) {
-                    chelovskyDP[col * num_samples + col] = sqrt(similarityMatrix[col * num_samples + col] - sum);
-                    diagonal[col] = chelovskyDP[col * num_samples + col];
-                } else {
-                    chelovskyDP[row * num_samples + col] = (similarityMatrix[row * num_samples + col] - sum) / chelovskyDP[col * num_samples + col];
-                }
-            }
-        }
-	std::vector<double> transformedCosts = costs;
-	// forward substitution fir L*z=costs
-	std::vector<double> z(num_samples);
-	z[0] = costs[0] / diagonal[0];
-	for (int col = 0; col < num_samples; ++col) {
-	    for (int row = 0; row <= col; ++row) {
-		transformedCosts[row] -= chelovskyDP[row * num_samples + col] * z[col];
-	    }
-	    z[col] = transformedCosts[col] / diagonal[col];
-	}
-	
-    //backpass : L.t*weights = z
-	std::vector<double> transformedZs = z;
-	weights[num_samples - 1] = z[num_samples - 1] / diagonal[num_samples - 1];
-	for (int col = num_samples - 1; col >= 0; --col) {
-	    for (int row = num_samples - 1; row > col; --row) {
-		transformedZs[row] -= chelovskyDP[col * num_samples + row] * weights[row];
-	    }
-	    weights[col] = transformedZs[col] / diagonal[col];
-		}
-	}
-     
+	choleskyDP.resize(num_samples * num_samples);
+     choleskyDP = choleskyDecomposition(similarityMatrix, costs, num_samples);
 
 
     }
@@ -130,7 +75,7 @@ public:
 	std::vector<double> z(numSamplesStored);
 	for (int col = 0; col < numSamplesStored; ++col) {
 	    for (int row = 0; row <= col; ++row) {
-		transformedK[row] -= chelovskyDP[row * numSamplesStored + col] * z[col];
+		transformedK[row] -= choleskyDP[row * numSamplesStored + col] * z[col];
 	    }
 	    z[col] = transformedK[col] / diagonal[col];
 
@@ -214,13 +159,15 @@ trainingDim = (int)(samples.size() / costs.size());
 	// combinatorial: (n+d, d)
 	// col of matrix = variable, row = equation
 	// a0 * sum(x_i^1) + a1 * sum(x_i^2) + ... = sum(y_i*x_i)
-	std::vector<double> leastSquaresMatrix(points_per_polynomial * pioints_per_polynomial, 0.0)
+    // sum of products of monomials of [row] and column
+
+	std::vector<double> leastSquaresMatrix(points_per_polynomial * points_per_polynomial, 0.0);
 	std::vector<double> leastSquaresResults(points_per_polynomial, 0.0);
 	for (int row = 0; row < points_per_polynomial; ++row) {
 		for (int col = 0; col <= row; ++col) {
-			double sum = 0
+			double sum = 0;
 				for (int i = 0; i < points_per_polynomial; ++i) {
-					std::vector<double> sample(samples.begin() + distances[i] * trainingDim, samples.begin() + (distances[i] + 1) * trainingDim);
+					std::vector<double> sample(trainingSamples.begin() + distances[i] * trainingDim, trainingSamples.begin() + (distances[i] + 1) * trainingDim);
 				//a more efficient aporoach wpuld be to make a vector double of sums of all tuples beforehand. hkwever icslready coddd this and am now too lazy to refactir.
 				sum += sumAllProductsOfTuples(sample, col)[col - 1] * sumAllProductsOfTuples(sample, row)[row - 1];
 				} 
@@ -229,8 +176,32 @@ trainingDim = (int)(samples.size() / costs.size());
 		}
 		
 	}
-	
+    std::vector<double> coefficients(points_per_polynomial, 0.0);
+    coefficients = choleskyDecomposition(leastSquaresMatrix, leastSquaresResults, points_per_polynomial);
+    double prediction = 0.0;
+    for (int i = 0; i < points_per_polynomial; ++i) {
+        prediction += coefficients[i] * sumAllProductsOfTuples(question, i + 1)[i];
+    }	
+    double noise_variance = 0.0f; // avg of all errors
+    for (int i = 0; i < points_per_polynomial; ++i) {
+        double error = 0.0;
+        for (int j = 0; j < points_per_polynomial; ++j) {
+            error += coefficients[j] * sumAllProductsOfTuples(trainingSamples.begin() + distances[i] * trainingDim, trainingSamples.begin() + (distances[i] + 1) * trainingDim, j + 1)[j];
+        }
+        error -= costs[distances[i]];
+        noise_variance += error * error;
 	
 }
+noise_variance /= points_per_polynomial;
+// we should calculate variance pointsise via cholesjy
+//but this approxes good
+return {prediction, noise_variance};
+}
+};
+
+class RandomForest : public SurrogateModel {
+public:
+    void train(const std::vector<double>& samples, const std::vector<double>& costs, int num_samples) override {
+        
 
 #endif

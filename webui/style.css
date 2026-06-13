@@ -1,0 +1,283 @@
+:root {
+    --bg: #ece9d8;
+    --surface: #ffffff;
+    --border: #aca899;
+    --text: #000000;
+    --muted: #716f64;
+    --nav-bg: #3a3a3a;
+    --nav-text: #ffffff;
+    --accent: #316ac5;
+    --danger: #b22222;
+    --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    --radius: 2px;
+    --shadow: 1px 1px 0 rgba(0,0,0,0.2);
+}
+* {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+}
+body {
+    font-family: var(--font);
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.5;
+    min-height: 100vh;
+}
+nav {
+    background: var(--nav-bg);
+    color: var(--nav-text);
+    padding: 0.6rem 1.2rem;
+    display: flex;
+    align-items: center;
+    gap: 2rem;
+    border-bottom: 2px solid var(--border);
+    box-shadow: 0 2px 4px rgba(0,0,0,0.15);
+    font-size: 0.95rem;
+}
+nav .brand {
+    font-weight: bold;
+    font-size: 1.1rem;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+    color: #f0e68c;
+}
+nav a {
+    color: var(--nav-text);
+    text-decoration: none;
+    padding: 0.2rem 0.6rem;
+    border: 1px solid transparent;
+    cursor: pointer;
+    transition: background 0.15s ease, border-color 0.15s ease;
+}
+nav a:hover,
+nav a.active-tab {
+    background: rgba(255,255,255,0.1);
+    border-color: #999;
+    border-radius: var(--radius);
+}
+main {
+    max-width: 960px;
+    margin: 2rem auto;
+    padding: 0 1rem;
+}
+.section-title {
+    font-size: 1.3rem;
+    font-weight: bold;
+    margin-bottom: 1rem;
+    padding-bottom: 0.25rem;
+    border-bottom: 2px solid var(--border);
+    color: var(--text);
+}
+.tab-content {
+    display: none;
+}
+.tab-content.visible {
+    display: block;
+}
+.experiments-list .empty-state {
+    background: var(--surface);
+    border: 1px dashed var(--border);
+    padding: 2rem;
+    text-align: center;
+    color: var(--muted);
+}
+details.experiment-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    margin-bottom: 0.75rem;
+    box-shadow: var(--shadow);
+    border-radius: var(--radius);
+    overflow: hidden;
+}
+details.experiment-card > summary {
+    padding: 0.75rem 1rem;
+    cursor: pointer;
+    background: #faf9f5;
+    border-bottom: 1px solid var(--border);
+    font-weight: bold;
+    font-size: 1rem;
+    list-style: none;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
+details.experiment-card > summary::-webkit-details-marker {
+    display: none;
+}
+details.experiment-card > summary::before {
+    content: '\25B6';
+    display: inline-block;
+    width: 1.2rem;
+    transition: transform 0.15s ease;
+    color: var(--muted);
+    font-size: 0.8rem;
+}
+details.experiment-card[open] > summary::before {
+    transform: rotate(90deg);
+}
+details.experiment-card .experiment-body {
+    padding: 1rem;
+}
+.experiment-body table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-bottom: 1rem;
+}
+.experiment-body th,
+.experiment-body td {
+    border: 1px solid var(--border);
+    padding: 0.5rem 0.75rem;
+    text-align: left;
+    font-size: 0.9rem;
+}
+.experiment-body th {
+    background: #f0f0ea;
+    font-weight: 600;
+    text-transform: uppercase;
+    font-size: 0.8rem;
+    letter-spacing: 0.4px;
+}
+.experiment-body .status-badge {
+    display: inline-block;
+    padding: 0.15rem 0.6rem;
+    font-size: 0.8rem;
+    border-radius: 10px;
+    background: #e0e0d0;
+    border: 1px solid var(--border);
+    color: var(--text);
+}
+.add-experiment {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    box-shadow: var(--shadow);
+    padding: 1.5rem;
+    border-radius: var(--radius);
+    margin-top: 2rem;
+}
+.add-experiment h3 {
+    font-size: 1.1rem;
+    margin-bottom: 1rem;
+    color: var(--text);
+}
+.form-group {
+    margin-bottom: 1rem;
+}
+.form-group label {
+    display: block;
+    font-weight: bold;
+    font-size: 0.85rem;
+    margin-bottom: 0.25rem;
+    text-transform: uppercase;
+    color: var(--muted);
+}
+.form-group input,
+.form-group select,
+.form-group textarea {
+    width: 100%;
+    padding: 0.4rem 0.6rem;
+    font-family: var(--font);
+    font-size: 0.9rem;
+    border: 1px solid var(--border);
+    background: #fff;
+    box-shadow: inset 1px 1px 2px rgba(0,0,0,0.05);
+    border-radius: var(--radius);
+}
+.form-row {
+    display: flex;
+    gap: 1rem;
+    flex-wrap: wrap;
+}
+.form-row .form-group {
+    flex: 1 1 200px;
+}
+.param-fieldset {
+    border: 1px solid var(--border);
+    padding: 1rem;
+    margin-bottom: 1rem;
+}
+.param-fieldset legend {
+    font-weight: bold;
+    text-transform: uppercase;
+    font-size: 0.8rem;
+}
+.btn {
+    font-family: var(--font);
+    font-size: 0.9rem;
+    padding: 0.45rem 1.2rem;
+    border: 1px solid var(--border);
+    background: #faf9f5;
+    box-shadow: var(--shadow);
+    cursor: pointer;
+    border-radius: var(--radius);
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+    transition: background 0.15s ease, border-color 0.15s ease;
+}
+.btn:hover {
+    background: #e8e4d8;
+    border-color: #888;
+}
+.btn-primary {
+    background: var(--accent);
+    color: white;
+    border-color: #2a4d8c;
+}
+.btn-primary:hover {
+    background: #2a4d8c;
+}
+.btn-danger {
+    background: var(--danger);
+    color: white;
+    border-color: #8b1a1a;
+    padding: 0.25rem 0.7rem;
+    font-size: 0.75rem;
+    margin-left: 0.5rem;
+}
+.btn-danger:hover {
+    background: #8b1a1a;
+}
+.add-param-btn {
+    margin-top: 0.5rem;
+}
+.settings-panel {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    box-shadow: var(--shadow);
+    padding: 1.5rem;
+    border-radius: var(--radius);
+    max-width: 500px;
+}
+.stats-grid {
+    display: flex;
+    gap: 2rem;
+    flex-wrap: wrap;
+}
+.stat-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    box-shadow: var(--shadow);
+    padding: 1.5rem;
+    flex: 1 1 200px;
+    text-align: center;
+    border-radius: var(--radius);
+}
+.stat-card .stat-value {
+    font-size: 2rem;
+    font-weight: bold;
+    color: var(--accent);
+}
+.stat-card .stat-label {
+    font-size: 0.8rem;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin-top: 0.3rem;
+}
+footer {
+    text-align: center;
+    margin-top: 3rem;
+    padding: 1rem;
+    color: var(--muted);
+    font-size: 0.75rem;
+    border-top: 1px solid var(--border);
+}

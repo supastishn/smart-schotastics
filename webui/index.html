@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Experiments - OptimaBay</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <nav>
+        <span class="brand">OptimaBay</span>
+        <a href="dashboard.html">Dashboard</a>
+        <a href="index.html" class="active-tab">Experiments</a>
+        <a href="settings.html">Settings</a>
+    </nav>
+    <main>
+        <h2 class="section-title">Experiments</h2>
+        <div class="experiments-list" id="experimentsList"></div>
+        <section class="add-experiment">
+            <h3>New Experiment</h3>
+            <form id="experimentForm" onsubmit="return false;">
+                <div class="form-group">
+                    <label for="expName">Experiment Name</label>
+                    <input type="text" id="expName" placeholder="e.g., hyperopt_v1" required>
+                </div>
+                <div class="form-group">
+                    <label for="objectiveName">Objective Name</label>
+                    <input type="text" id="objectiveName" placeholder="e.g., accuracy" required>
+                </div>
+                <div class="form-group">
+                    <label for="direction">Direction</label>
+                    <select id="direction" required>
+                        <option value="minimize">Minimize</option>
+                        <option value="maximize">Maximize</option>
+                    </select>
+                </div>
+                <fieldset class="param-fieldset">
+                    <legend>Parameters</legend>
+                    <div id="paramsContainer">
+                        <div class="form-row param-row">
+                            <div class="form-group">
+                                <label>Name</label>
+                                <input type="text" placeholder="lr" class="param-name" required>
+                            </div>
+                            <div class="form-group">
+                                <label>Type</label>
+                                <select class="param-type" required>
+                                    <option value="float">float</option>
+                                    <option value="int">int</option>
+                                    <option value="categorical">categorical</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label>Range</label>
+                                <input type="text" placeholder="0.0001, 0.1" class="param-range" required>
+                            </div>
+                        </div>
+                    </div>
+                    <button type="button" class="btn add-param-btn" id="addParamButton">+ Add Parameter</button>
+                </fieldset>
+                <button type="submit" class="btn btn-primary" id="createExperimentButton">Create Experiment</button>
+            </form>
+        </section>
+    </main>
+    <footer>
+        Experiment Optimizer &mdash; Internal Tool
+    </footer>
+    <script src="script.js"></script>
+</body>
+</html>

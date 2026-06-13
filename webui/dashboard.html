@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dashboard - OptimaBay</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <nav>
+        <span class="brand">OptimaBay</span>
+        <a href="dashboard.html" class="active-tab">Dashboard</a>
+        <a href="index.html">Experiments</a>
+        <a href="settings.html">Settings</a>
+    </nav>
+    <main>
+        <h2 class="section-title">Dashboard</h2>
+        <div class="stats-grid" id="dashboardStats"></div>
+    </main>
+    <footer>
+        Experiment Optimizer &mdash; Internal Tool
+    </footer>
+    <script>
+        (function() {
+            const STORAGE_KEY_EXPERIMENTS = 'experiments';
+            function loadExperimentsFromStorage() {
+                const raw = localStorage.getItem(STORAGE_KEY_EXPERIMENTS);
+                if (!raw) return [];
+                try {
+                    return JSON.parse(raw);
+                } catch (e) {
+                    return [];
+                }
+            }
+            function updateDashboardStats() {
+                const experiments = loadExperimentsFromStorage();
+                const container = document.getElementById('dashboardStats');
+                if (!container) return;
+                const total = experiments.length;
+                const idle = experiments.filter(function(e) { return e.status === 'idle'; }).length;
+                const running = experiments.filter(function(e) { return e.status === 'running'; }).length;
+                const completed = experiments.filter(function(e) { return e.status === 'completed'; }).length;
+                container.innerHTML = 
+                    '<div class="stat-card">' +
+                        '<div class="stat-value">' + total + '</div>' +
+                        '<div class="stat-label">Total Experiments</div>' +
+                    '</div>' +
+                    '<div class="stat-card">' +
+                        '<div class="stat-value">' + idle + '</div>' +
+                        '<div class="stat-label">Idle</div>' +
+                    '</div>' +
+                    '<div class="stat-card">' +
+                        '<div class="stat-value">' + running + '</div>' +
+                        '<div class="stat-label">Running</div>' +
+                    '</div>' +
+                    '<div class="stat-card">' +
+                        '<div class="stat-value">' + completed + '</div>' +
+                        '<div class="stat-label">Completed</div>' +
+                    '</div>';
+            }
+            document.addEventListener('DOMContentLoaded', updateDashboardStats);
+        })();
+    </script>
+</body>
+</html>

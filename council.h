@@ -3,6 +3,9 @@
 #include "surrogates.h"
 #include <cmath>
 #include <vector>
+#include <random>
+#include <algorithm>
+#include "helpers.h"
 struct RegionArgs {
     int minDistance;
     int maxDistance;
@@ -15,7 +18,7 @@ double nDimensionalDistance(const std::vector<double>& points1, const std::vecto
     }
     return sqrt(sum);
 }
-class Council {
+class Council : SurrogateModel {
 private:
     std::vector<double> samples;
     std::vector<double> costs;
@@ -28,6 +31,7 @@ private:
     std::mt19937 gen;
     double validationGravity
     double softmaxBase;
+    std::vector<
     std::vector<double> modelWeights;
     std::vector<double> getSamplePoint(int index) {
         std::vector<double> point(fx_arguments);
@@ -45,8 +49,8 @@ public:
 
     }
 	// TODO: make this output variance too not just mean
-	double predict(const std::vector<double>& question) {
-	std::vector<double> predictions;
+	GaussianPrediction predict(const std::vector<double>& question) {
+	std::vector<GaussianPrediction> predictions;
 	for (SurrogateModel* model : models) {
 	    double prediction = model->predict(question);	    
 	    predictions.push_back(prediction);
@@ -54,21 +58,29 @@ public:
 	}
 	// arithmetic mean, weight = 1/distance^valGravity. the ezponent gives emphasis to closer ones
 	std::vector<double> weightedPredictions(models.size(), 0.0);
+    double mean;
+    double variance;
 	double weightSum = 0.0;
 	for (std::vector<double>& softmax : softmaxes) {
 	    double distance = nDimensionalDistance(softmax.first, question);
 	    double weight = 1 / pow(distance, -validationGravity);
 	    weightSum += weight;
+    
 	    for (size_t i = 0; i < models.size(); ++i) {
-    }		    weightedPredictions[i] += softmax.second[i] * weight;
-	    }
-	}
+    		    weightedPredictions[i] += softmax.second[i] * weight;
+
+        }
+    }
       for (double& wp : weightedPredictions) {
 	wp /= weightSum;
 	}
+    for (size_t i = 0; i < models.size(); ++i) {
+        mean += weightedPredictions[i] * predictions[i].first;
+        variance += weightedPredictions[i] * predictions[i].second;
+    }
 
 }
-     }
+     
     void setSamples(const std::vector<double>& newSamples, const std::vector<double>& newCosts) {
         samples = newSamples;
         costs = newCosts;
@@ -84,6 +96,11 @@ public:
 	std::vector<int> validationCosts;
 	std::uniform_int_distribution<> dis(0, (int)costs.size() - 1);
 	for (int i = 0; i < validationSize; ++i) {
+        if (i == 0 | i == validationSize - 1) {
+            // always validate extrapolation points to encourage it to be good at those, since they are more likely to be chosen as optima
+            validationCosts.push_back(i);
+            continue;
+        }
 	int index = dis(gen);
 	while (std::find(validationCosts.begin(), validationCosts.end(), costs[index]) != validationCosts.end()) {
 	    index = dis(gen);

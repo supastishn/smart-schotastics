@@ -31,4 +31,53 @@ std::vector<double> sumAllProductsOfTuplesUpTo(const std::vector<double>& arr, i
     }
     return result;
 }
+
+std::vector<double> choleskyDecomposition(const std::vector<double>& similarityMatrix, const std::vector<double>& costs, int num_samples) {
+    std::vector<double> chelovskyDP(num_samples * num_samples, 0.0);
+    std::vector<double> diagonal(num_samples, 0.0);
+    std::vector<double> weights(num_samples, 0.0);
+    if (num_samples > 0) {
+        weights[0] = sqrt(similarityMatrix[0]);
+        for (int col = 0; col < num_samples; ++col) {
+            for (int row = col; row < num_samples; ++row) {
+                double sum = 0.0;
+                if (row == col) {
+                    for (int i = 0; i < row; ++i) {
+                        sum += chelovskyDP[row * num_samples + i] * chelovskyDP[row * num_samples + i];
+                    }
+                } else {
+                    for (int i = 0; i < col; ++i) {
+                        sum += chelovskyDP[row * num_samples + i] * chelovskyDP[col * num_samples + i];
+                    }
+                }
+                if (row == col) {
+                    chelovskyDP[col * num_samples + col] = sqrt(similarityMatrix[col * num_samples + col] - sum);
+                    diagonal[col] = chelovskyDP[col * num_samples + col];
+                } else {
+                    chelovskyDP[row * num_samples + col] = (similarityMatrix[row * num_samples + col] - sum) / chelovskyDP[col * num_samples + col];   
+                }
+            }
+        }
+    }
+    std::vector<double> transformedCosts = costs;
+    // forward substitution fir L*z=costs
+    std::vector<double> z(num_samples);
+    z[0] = costs[0] / diagonal[0];
+    for (int col = 0; col < num_samples; ++col) {
+    for (int row = 0; row <= col; ++row) {
+        transformedCosts[row] -= chelovskyDP[row * num_samples + col] * z[col];
+    }  
+    z[col] = transformedCosts[col] / diagonal[col];
+    }
+    std::vector<double> weights(num_samples, 0.0);
+    std::vector<double> transformedZs = z;
+    weights[num_samples - 1] = z[num_samples - 1] / diagonal[num_samples - 1];
+    for (int col = num_samples - 1; col >= 0; --col) {
+    for (int row = num_samples - 1; row > col; --row) {
+        transformedZs[row] -= chelovskyDP[col * num_samples + row] * weights[row];
+    }
+    weights[col] = transformedZs[col] / diagonal[col]; 
+}
+return weights;
+}
 #endif
