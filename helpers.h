@@ -84,6 +84,27 @@ std::vector<double> choleskyDecomposition(const std::vector<double>& similarityM
     return weights;
 }
 
+inline void generateExponents(int index, int current_sum, int max_degree, std::vector<int>& current, std::vector<std::vector<int>>& result) {
+    if (index == static_cast<int>(current.size())) {
+        result.push_back(current);
+        return;
+    }
+    for (int p = 0; current_sum + p <= max_degree; ++p) {
+        current[index] = p;
+        generateExponents(index + 1, current_sum + p, max_degree, current, result);
+    }
+}
+
+inline double evaluateMonomial(const std::vector<double>& sample, const std::vector<int>& exponents) {
+    double val = 1.0;
+    for (size_t i = 0; i < sample.size(); ++i) {
+        if (exponents[i] > 0) {
+            val *= std::pow(sample[i], exponents[i]);
+        }
+    }
+    return val;
+}
+
 std::vector<double> solvePolynomialLeastSquares(
     const std::vector<double>& selectedSamples,
     const std::vector<double>& selectedCosts,
@@ -91,23 +112,31 @@ std::vector<double> solvePolynomialLeastSquares(
     int degree
 ) {
     int k_points = static_cast<int>(selectedCosts.size());
-    int num_coefficients = degree + 1;
+    std::vector<std::vector<int>> exponentsList;
+    std::vector<int> current(trainingDim, 0);
+    generateExponents(0, 0, degree, current, exponentsList);
+    int num_coefficients = static_cast<int>(exponentsList.size());
+    std::vector<double> evaluations(k_points * num_coefficients, 0.0);
+    for (int i = 0; i < k_points; ++i) {
+        std::vector<double> sample(selectedSamples.begin() + i * trainingDim, selectedSamples.begin() + (i + 1) * trainingDim);
+        for (int j = 0; j < num_coefficients; ++j) {
+            evaluations[i * num_coefficients + j] = evaluateMonomial(sample, exponentsList[j]);
+        }
+    }
     std::vector<double> leastSquaresMatrix(num_coefficients * num_coefficients, 0.0);
     std::vector<double> leastSquaresResults(num_coefficients, 0.0);
     for (int row = 0; row < num_coefficients; ++row) {
         for (int col = 0; col <= row; ++col) {
             double sum = 0.0;
             for (int i = 0; i < k_points; ++i) {
-                std::vector<double> sample(selectedSamples.begin() + i * trainingDim, selectedSamples.begin() + (i + 1) * trainingDim);
-                sum += getTupleProduct(sample, col) * getTupleProduct(sample, row);
+                sum += evaluations[i * num_coefficients + col] * evaluations[i * num_coefficients + row];
             }
             leastSquaresMatrix[row * num_coefficients + col] = sum;
             leastSquaresMatrix[col * num_coefficients + row] = sum;
         }
         double resSum = 0.0;
         for (int i = 0; i < k_points; ++i) {
-            std::vector<double> sample(selectedSamples.begin() + i * trainingDim, selectedSamples.begin() + (i + 1) * trainingDim);
-            resSum += selectedCosts[i] * getTupleProduct(sample, row);
+            resSum += selectedCosts[i] * evaluations[i * num_coefficients + row];
         }
         leastSquaresResults[row] = resSum;
     }

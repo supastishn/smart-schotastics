@@ -57,7 +57,8 @@ double perihelion_diagonal_one(double current_guess, const std::vector<double>& 
             g_x[i] -= g_x[0] * nChooseK(i, j) * g_x[j] * sums[i+1-j];
         }
     }
-    return current_guess + ((degree-1) * g_x[degree-2] / g_x[degree-1]);
+    // max for damping factor
+    return current_guess + ((degree-1) * g_x[degree-2] / (std::max(abs(g_x[degree-1]), 1e-4) * std::signbit(g_x[degree-1]))) * current_guess;
     
 }
 

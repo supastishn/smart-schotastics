@@ -187,17 +187,20 @@ public:
             selectedCosts[i] = costs[idx];
         }
         std::vector<double> coefficients = solvePolynomialLeastSquares(selectedSamples, selectedCosts, trainingDim, polynomial_degree);
+        std::vector<std::vector<int>> exponentsList;
+        std::vector<int> current(trainingDim, 0);
+        generateExponents(0, 0, polynomial_degree, current, exponentsList);
+        int num_coefficients = static_cast<int>(exponentsList.size());
         double prediction = 0.0;
-        int num_coefficients = polynomial_degree + 1;
         for (int i = 0; i < num_coefficients; ++i) {
-            prediction += coefficients[i] * getTupleProduct(question, i);
+            prediction += coefficients[i] * evaluateMonomial(question, exponentsList[i]);
         }	
         double noise_variance = 0.0;
         for (int i = 0; i < k_points; ++i) {
             std::vector<double> sample(selectedSamples.begin() + i * trainingDim, selectedSamples.begin() + (i + 1) * trainingDim);
             double approx = 0.0;
             for (int j = 0; j < num_coefficients; ++j) {
-                approx += coefficients[j] * getTupleProduct(sample, j);
+                approx += coefficients[j] * evaluateMonomial(sample, exponentsList[j]);
             }
             double error = approx - selectedCosts[i];
             noise_variance += error * error;
