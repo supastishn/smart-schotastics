@@ -1,8 +1,9 @@
 #ifndef SURROGATES_IMPORTED
 #define SURROGATES_IMPORTED
-#include <cmath>
-#include <vector>
 #include <algorithm>
+#include <cmath>
+#include <utility>
+#include <vector>
 #include "helpers.h"
 struct GaussianPrediction {
     double mean;
@@ -23,14 +24,10 @@ class RBFKernel : public Kernel {
 private:
     double lengthScale;
 public:
-    RBFKernel(double lengthScale) : lengthScale(lengthScale) {}
+    explicit RBFKernel(double lengthScale) : lengthScale(std::max(1e-6, lengthScale)) {}
     double evaluate(const std::vector<double>& x1, const std::vector<double>& x2) const override {
-        double sum = 0.0;
-        for (size_t i = 0; i < x1.size(); ++i) {
-            double diff = x1[i] - x2[i];
-            sum += diff * diff;
-        }
-        return exp(-sum / (2.0 * lengthScale * lengthScale));
+        const double distSq = squaredEuclideanDistance(x1, x2);
+        return std::exp(-distSq / (2.0 * lengthScale * lengthScale));
     }
 };
 class GaussianProcess : public SurrogateModel {
@@ -39,97 +36,84 @@ private:
     std::vector<double> similarityMatrix;
     std::vector<double> weights;
     std::vector<double> trainingSamples;
-    std::vector<double> choleskyDP;
-    std::vector<double> diagonal;
+    CholeskyFactor choleskyFactor;
     double priorVariance;
+    double noiseJitter;
     int trainingDim;
     int numSamplesStored;
 public:
-    GaussianProcess(Kernel* kernel) : kernel(kernel), trainingDim(0), numSamplesStored(0), priorVariance(1.0) {}
+    explicit GaussianProcess(Kernel* kernel, double noiseJitter = 1e-6)
+        : kernel(kernel),
+          choleskyFactor{{}, {}, 0},
+          priorVariance(1.0),
+          noiseJitter(noiseJitter),
+          trainingDim(0),
+          numSamplesStored(0) {}
     void train(const std::vector<double>& samples, const std::vector<double>& costs, int num_samples) override {
         numSamplesStored = num_samples;
-        if (num_samples == 0) return;
-        trainingDim = (int)(samples.size() / num_samples);
+        if (num_samples <= 0 || costs.empty() || !kernel) {
+            numSamplesStored = 0;
+            return;
+        }
+        trainingDim = static_cast<int>(samples.size() / static_cast<size_t>(num_samples));
+        if (trainingDim <= 0) {
+            numSamplesStored = 0;
+            return;
+        }
         trainingSamples = samples;
-        similarityMatrix.resize(num_samples * num_samples);
+        similarityMatrix.assign(num_samples * num_samples, 0.0);
+        std::vector<double> xi(trainingDim);
+        std::vector<double> xj(trainingDim);
         for (int i = 0; i < num_samples; ++i) {
-            std::vector<double> xi(trainingDim);
             for (int d = 0; d < trainingDim; ++d) {
                 xi[d] = samples[i * trainingDim + d];
             }
-            for (int j = 0; j < num_samples; ++j) {
-                std::vector<double> xj(trainingDim);
+            for (int j = 0; j <= i; ++j) {
                 for (int d = 0; d < trainingDim; ++d) {
                     xj[d] = samples[j * trainingDim + d];
                 }
-                similarityMatrix[i * num_samples + j] = kernel->evaluate(xi, xj);
+                const double kVal = kernel->evaluate(xi, xj);
+                similarityMatrix[i * num_samples + j] = kVal;
+                similarityMatrix[j * num_samples + i] = kVal;
             }
         }
-        weights = choleskyDecomposition(similarityMatrix, costs, num_samples);
-        choleskyDP.assign(num_samples * num_samples, 0.0);
-        diagonal.assign(num_samples, 0.0);
-        for (int col = 0; col < num_samples; ++col) {
-            for (int row = col; row < num_samples; ++row) {
-                double sum = 0.0;
-                if (row == col) {
-                    for (int i = 0; i < row; ++i) {
-                        sum += choleskyDP[row * num_samples + i] * choleskyDP[row * num_samples + i];
-                    }
-                } else {
-                    for (int i = 0; i < col; ++i) {
-                        sum += choleskyDP[row * num_samples + i] * choleskyDP[col * num_samples + i];
-                    }
-                }
-                if (row == col) {
-                    choleskyDP[col * num_samples + col] = sqrt(std::max(1e-9, similarityMatrix[col * num_samples + col] - sum));
-                    diagonal[col] = choleskyDP[col * num_samples + col];
-                } else {
-                    choleskyDP[row * num_samples + col] = (similarityMatrix[row * num_samples + col] - sum) / choleskyDP[col * num_samples + col];   
-                }
-            }
-        }
+        choleskyFactor = computeCholeskyFactor(similarityMatrix, num_samples, noiseJitter);
+        weights = solveWithCholesky(choleskyFactor, costs);
     }
     GaussianPrediction predict(const std::vector<double>& question) const override {
-        if (numSamplesStored == 0) return {0.0, priorVariance};
+        if (numSamplesStored == 0 || !kernel) {
+            return {0.0, priorVariance};
+        }
         double mean = 0.0;
-        std::vector<double> k(numSamplesStored);
+        std::vector<double> k(numSamplesStored, 0.0);
+        std::vector<double> xi(trainingDim);
         for (int i = 0; i < numSamplesStored; ++i) {
-            std::vector<double> xi(trainingDim);
             for (int d = 0; d < trainingDim; ++d) {
                 xi[d] = trainingSamples[i * trainingDim + d];
             }
             k[i] = kernel->evaluate(question, xi);
             mean += weights[i] * k[i];
         }
-        std::vector<double> z(numSamplesStored, 0.0);
+        const std::vector<double> z = forwardSubstituteCholesky(choleskyFactor, k);
+        double explainedVariance = 0.0;
         for (int i = 0; i < numSamplesStored; ++i) {
-            double sum = 0.0;
-            for (int j = 0; j < i; ++j) {
-                sum += choleskyDP[i * numSamplesStored + j] * z[j];
-            }
-            z[i] = (k[i] - sum) / diagonal[i];
+            explainedVariance += z[i] * z[i];
         }
-        std::vector<double> variance(numSamplesStored, 0.0);
-        for (int i = numSamplesStored - 1; i >= 0; --i) {
-            double sum = 0.0;
-            for (int j = i + 1; j < numSamplesStored; ++j) {
-                sum += choleskyDP[j * numSamplesStored + i] * variance[j];
-            }
-            variance[i] = (z[i] - sum) / diagonal[i];
-        }
-        double endVariance = 0.0;
-        for (int i = 0; i < numSamplesStored; ++i) {
-            endVariance += k[i] * variance[i];
-        }
-        endVariance = priorVariance - endVariance;
+        const double prior = kernel->evaluate(question, question);
+        const double endVariance = std::max(1e-12, prior - explainedVariance);
         return {mean, endVariance};
     }
 };
 class NeuralNetwork : public SurrogateModel {
 public:
-    void train(const std::vector<double>& samples, const std::vector<double>& costs, int num_samples) override {}
+    void train(const std::vector<double>& samples, const std::vector<double>& costs, int num_samples) override {
+        (void)samples;
+        (void)costs;
+        (void)num_samples;
+    }
     GaussianPrediction predict(const std::vector<double>& question) const override {
-        return {0.0, 0.0};
+        (void)question;
+        return {0.0, 1.0};
     }
 };
 class PiecewisePolynomialModel : public SurrogateModel {
@@ -140,80 +124,83 @@ private:
     std::vector<double> costs;
     int trainingDim;
 public:
-    PiecewisePolynomialModel(int degree, int points) 
+    PiecewisePolynomialModel(int degree, int points)
         : polynomial_degree(degree), points_per_polynomial(points), trainingDim(0) {}
-    double nDimensionalDistance(const std::vector<double>& a, const std::vector<double>& b) const {
-        double sum = 0.0;
-        for (size_t i = 0; i < a.size(); ++i) {
-            double diff = a[i] - b[i];
-            sum += diff * diff;
-        }
-        return sqrt(sum);
-    }
     void train(const std::vector<double>& samples, const std::vector<double>& costs_in, int num_samples) override {
+        (void)num_samples;
         trainingSamples = samples;
         costs = costs_in;
         if (!costs.empty()) {
-            trainingDim = (int)(samples.size() / costs.size());
+            trainingDim = static_cast<int>(samples.size() / costs.size());
         } else {
             trainingDim = 0;
         }
     }
     GaussianPrediction predict(const std::vector<double>& question) const override {
         if (costs.empty() || trainingDim == 0) {
-            return {0.0, 0.0};
+            return {0.0, 1.0};
         }
         std::vector<std::pair<double, int>> distanceIndices(costs.size());
+        std::vector<double> samplePoint(trainingDim);
         for (size_t i = 0; i < costs.size(); ++i) {
-            std::vector<double> samplePoint(trainingDim);
             for (int d = 0; d < trainingDim; ++d) {
                 samplePoint[d] = trainingSamples[i * trainingDim + d];
             }
-            distanceIndices[i] = { nDimensionalDistance(samplePoint, question), (int)i };
+            distanceIndices[i] = {nDimensionalDistance(samplePoint, question), static_cast<int>(i)};
         }
-        std::vector<std::pair<double, int>> sortedDistanceIndices = distanceIndices;
-        std::sort(sortedDistanceIndices.begin(), sortedDistanceIndices.end());
-        int k_points = std::min(points_per_polynomial, (int)costs.size());
+        const int k_points = std::min(points_per_polynomial, static_cast<int>(costs.size()));
         if (k_points <= 0) {
-            return {0.0, 0.0};
+            return {0.0, 1.0};
         }
+        std::partial_sort(distanceIndices.begin(), distanceIndices.begin() + k_points, distanceIndices.end());
         std::vector<double> selectedSamples(k_points * trainingDim);
         std::vector<double> selectedCosts(k_points);
         for (int i = 0; i < k_points; ++i) {
-            int idx = sortedDistanceIndices[i].second;
+            const int idx = distanceIndices[i].second;
             for (int d = 0; d < trainingDim; ++d) {
                 selectedSamples[i * trainingDim + d] = trainingSamples[idx * trainingDim + d];
             }
             selectedCosts[i] = costs[idx];
         }
-        std::vector<double> coefficients = solvePolynomialLeastSquares(selectedSamples, selectedCosts, trainingDim, polynomial_degree);
+        const std::vector<double> coefficients = solvePolynomialLeastSquares(selectedSamples, selectedCosts, trainingDim, polynomial_degree);
         std::vector<std::vector<int>> exponentsList;
         std::vector<int> current(trainingDim, 0);
         generateExponents(0, 0, polynomial_degree, current, exponentsList);
-        int num_coefficients = static_cast<int>(exponentsList.size());
+        const int num_coefficients = static_cast<int>(exponentsList.size());
         double prediction = 0.0;
         for (int i = 0; i < num_coefficients; ++i) {
             prediction += coefficients[i] * evaluateMonomial(question, exponentsList[i]);
-        }	
-        double noise_variance = 0.0;
-        for (int i = 0; i < k_points; ++i) {
-            std::vector<double> sample(selectedSamples.begin() + i * trainingDim, selectedSamples.begin() + (i + 1) * trainingDim);
-            double approx = 0.0;
-            for (int j = 0; j < num_coefficients; ++j) {
-                approx += coefficients[j] * evaluateMonomial(sample, exponentsList[j]);
-            }
-            double error = approx - selectedCosts[i];
-            noise_variance += error * error;
         }
-        noise_variance /= k_points;
+        double noise_variance = 0.0;
+        if (k_points > num_coefficients) {
+            for (int i = 0; i < k_points; ++i) {
+                std::vector<double> sample(selectedSamples.begin() + i * trainingDim, selectedSamples.begin() + (i + 1) * trainingDim);
+                double approx = 0.0;
+                for (int j = 0; j < num_coefficients; ++j) {
+                    approx += coefficients[j] * evaluateMonomial(sample, exponentsList[j]);
+                }
+                const double error = approx - selectedCosts[i];
+                noise_variance += error * error;
+            }
+            noise_variance /= static_cast<double>(k_points - num_coefficients);
+        } else {
+            const ZScoreStats stats = computeZScoreStats(selectedCosts);
+            noise_variance = stats.std_dev * stats.std_dev;
+        }
+        noise_variance = std::max(1e-6, noise_variance);
         return {prediction, noise_variance};
     }
 };
 class RandomForest : public SurrogateModel {
 public:
-    void train(const std::vector<double>& samples, const std::vector<double>& costs, int num_samples) override {}
+    void train(const std::vector<double>& samples, const std::vector<double>& costs, int num_samples) override {
+        (void)samples;
+        (void)costs;
+        (void)num_samples;
+    }
     GaussianPrediction predict(const std::vector<double>& question) const override {
-        return {0.0, 0.0};
+        (void)question;
+        return {0.0, 1.0};
     }
 };
 #endif

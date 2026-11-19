@@ -1,110 +1,210 @@
-#ifndef ACQUISITIONS
-#define ACQUISITIONS
-
-#include "bayesian.h"
-#include "council.h"
+#ifndef ACQUISITIONS_IMPORTED
+#define ACQUISITIONS_IMPORTED
+#include <algorithm>
+#include <cmath>
+#include <cstdlib>
+#include <limits>
+#include <numeric>
+#include <random>
+#include <vector>
 #include "helpers.h"
+#include "lbfgs.h"
 #include "perihelion.h"
 #include "surrogates.h"
-#include <cmath>
-#include <vector>  
-double normPDF(double x) {
-    return (1.0 / sqrt(2.0 * M_PI)) * exp(-0.5 * x * x);
+inline double normPDF(double x) {
+    return normalPDF(x);
 }
-double normCDF(double x) {
-    return 0.5 * (1.0 + erf(x / sqrt(2.0)));
+inline double normCDF(double x) {
+    return normalCDF(x);
 }
-// EI will use random search to find best Expected Improvement overall
-std::vector<double> expectedImprovement(const SurrogateModel& surrogate, const std::vector<double>& currentBest, const std::vector<double>& points const std::vector<double>& costs) {
-    std::vector<double> bestPoint(currentBest.size(), 0.0);
-    double bestEI = -std::numeric_limits<double>::infinity();
-    for (int i = 0; i < 100; ++i) {
-        std::vector<double> randomPoint(currentBest.size());
-        for (size_t d = 0; d < currentBest.size(); ++d) {
-            randomPoint[d] = static_cast<double>(rand()) / RAND_MAX; // Random value between 0 and 1
+inline double computeExpectedImprovement(const GaussianPrediction& prediction, double bestCost) {
+    const double stdDev = std::sqrt(std::max(prediction.variance, 1e-12));
+    const double improvement = bestCost - prediction.mean;
+    const double z = improvement / stdDev;
+    return std::max(0.0, improvement * normalCDF(z) + stdDev * normalPDF(z));
+}
+inline double computeLogExpectedImprovement(const GaussianPrediction& prediction, double bestCost) {
+    const double stdDev = std::sqrt(std::max(prediction.variance, 1e-12));
+    const double z = (bestCost - prediction.mean) / stdDev;
+    double logH = 0.0;
+    if (z >= -10.0) {
+        const double h = std::max(1e-300, z * normalCDF(z) + normalPDF(z));
+        logH = std::log(h);
+    } else {
+        const double t = -z;
+        const double t2 = t * t;
+        const double t4 = t2 * t2;
+        const double t6 = t4 * t2;
+        const double t8 = t4 * t4;
+        const double poly = 1.0 / t2 - 3.0 / t4 + 15.0 / t6 - 105.0 / t8;
+        const double logPhi = -0.5 * std::log(2.0 * kPi) - 0.5 * t2;
+        logH = logPhi + std::log(std::max(1e-300, poly));
+    }
+    return std::log(stdDev) + logH;
+}
+inline std::vector<double> expectedImprovement(
+    const SurrogateModel& surrogate,
+    const std::vector<double>& currentBest,
+    const std::vector<double>& points,
+    const std::vector<double>& costs
+) {
+    (void)points;
+    const size_t dimension = std::max<size_t>(1, currentBest.size());
+    const double bestCost = costs.empty() ? 0.0 : *std::min_element(costs.begin(), costs.end());
+    std::vector<double> bestPoint(dimension, 0.5);
+    double bestLogEI = -std::numeric_limits<double>::infinity();
+    if (!currentBest.empty()) {
+        std::vector<double> clampedBest = currentBest;
+        clampUnitPoint(clampedBest);
+        const double logEI = computeLogExpectedImprovement(surrogate.predict(clampedBest), bestCost);
+        if (logEI > bestLogEI) {
+            bestLogEI = logEI;
+            bestPoint = clampedBest;
         }
-        GaussianPrediction prediction = surrogate.predict(randomPoint);
-        double improvement = currentBest[0] - prediction.mean; // Assuming minimization
-        double ei = improvement * normCDF(improvement / sqrt(prediction.variance)) + sqrt(prediction.variance) * normPDF(improvement / sqrt(prediction.variance));
-        if (ei > bestEI) {
-            bestEI = ei;
+    }
+    for (int i = 0; i < 100; ++i) {
+        std::vector<double> randomPoint(dimension);
+        for (size_t d = 0; d < dimension; ++d) {
+            randomPoint[d] = static_cast<double>(std::rand()) / static_cast<double>(RAND_MAX);
+        }
+        const GaussianPrediction prediction = surrogate.predict(randomPoint);
+        const double logEI = computeLogExpectedImprovement(prediction, bestCost);
+        if (logEI > bestLogEI) {
+            bestLogEI = logEI;
             bestPoint = randomPoint;
         }
     }
     return bestPoint;
 }
-// same as standard EI but uses perihelion as opposed to random:
-// 1. uses perihelion on a subset of points then runs a Newton step
-// 2. uses perihelion on GP in order to find the best
-std::vector<double> expectedImprovementPerihelion(const SurrogateModel& surrogate, const std::vector<double>& currentBest, const std::vector<double>& points, const std::vector<double>& costs) {
-    // eval 50 random points with GP
-    int dimension = (int)currentBest.size();
+inline std::vector<double> expectedImprovementPerihelion(
+    const SurrogateModel& surrogate,
+    const std::vector<double>& currentBest,
+    const std::vector<double>& points,
+    const std::vector<double>& costs,
+    PerihelionMethod method = PerihelionMethod::HALLEY
+) {
+    const size_t dimension = std::max<size_t>(1, currentBest.size());
+    const double bestCost = costs.empty() ? 0.0 : *std::min_element(costs.begin(), costs.end());
     constexpr int numRandomPoints = 50;
-    std::vector<std::vector<double>> randomPoints(numRandomPoints, std::vector<double>(dimension));
-    std::vector<GaussianPrediction> predictions(numRandomPoints, 0.0);
+    std::vector<std::vector<double>> candidatePoints(numRandomPoints, std::vector<double>(dimension, 0.5));
+    std::vector<double> candidateNegLogEI(numRandomPoints, 0.0);
+    std::vector<double> bestPoint = candidatePoints[0];
+    double bestLogEI = -std::numeric_limits<double>::infinity();
     for (int i = 0; i < numRandomPoints; ++i) {
         for (size_t d = 0; d < dimension; ++d) {
-            randomPoints[i][d] = static_cast<double>(rand()) / RAND_MAX; // Random value between 0 and 1
+            candidatePoints[i][d] = static_cast<double>(std::rand()) / static_cast<double>(RAND_MAX);
         }
-        GaussianPrediction prediction = surrogate.predict(randomPoints[i]);
-        predictions[i] = prediction;
-    }
-    std::vector<std::vector<double>> perPointHistory(dimension, std::vector<double>(points.size() / dimension, 0.0));
-    // this is inefficient as points often share same cost. i'll fix this later
-    std::vector<std::vector<double>> perPointCosts(dimension, std::vector<double>(points.size() / dimension, 0.0));
-    for (size_t i = 0; i < dimension; ++i) {
-        for (size_t j = 0; j < points.size() / dimension; ++j) {
-            perPointHistory[i][j] = points[j * dimension + i];
-            perPointCosts[i][j] = costs[j];
+        const GaussianPrediction prediction = surrogate.predict(candidatePoints[i]);
+        const double logEI = computeLogExpectedImprovement(prediction, bestCost);
+        candidateNegLogEI[i] = -logEI;
+        if (logEI > bestLogEI) {
+            bestLogEI = logEI;
+            bestPoint = candidatePoints[i];
         }
     }
-    std::vector<double> perihelionPoint = perihelion_diagonal_all(currentBest, perPointHistory, perPointCosts, surrogate);
-    GaussianPrediction perihelionPrediction = surrogate.predict(perihelionPoint);
-    randomPoints.push_back(perihelionPoint);
-    predictions.push_back(perihelionPrediction);
-
-    // now we repeatedly eval GP on perihelion for best point
-    std::vector<std::vector<double>> gaussianHistory(dimension, std::vector<double>(predictions.size(), 0.0));
-    std::vector<std::vector<double>> gaussianCosts(dimension, std::vector<double>(predictions.size(), 0.0));
-    for (size_t i = 0; i < dimension; ++i) {
-        for (size_t j = 0; j < predictions.size(); ++j) {
-            gaussianHistory[i][j] = randomPoints[j][i];
-            gaussianCosts[i][j] = predictions[j].mean;  
-        }
-    }  
-    constexpr int perihelion_iters = 30;
-    constexpr int perihelion_random_start = 5;
-    int orig_size = (int)randomPoints.size();
-    for (int i = 0; i < perihelion_random_start; ++i) {
-        std::vector<double> randomStart(dimension);
-        
-        randomStart = randomPoints[rand() % orig_size];
-        for (int j = 0; j < perihelion_iters; ++j) {
-            std::vector<double> newPoint = perihelion_diagonal_all(randomStart, gaussianHistory, gaussianCosts, surrogate);
-            GaussianPrediction newPrediction = surrogate.predict(newPoint);
-            randomStart = newPoint;
+    const size_t numRealPoints = std::min(costs.size(), points.size() / dimension);
+    if (numRealPoints >= 2 && !currentBest.empty()) {
+        std::vector<std::vector<double>> realPointHistory(numRealPoints, std::vector<double>(dimension, 0.0));
+        for (size_t j = 0; j < numRealPoints; ++j) {
             for (size_t d = 0; d < dimension; ++d) {
-                gaussianHistory[d].push_back(newPoint[d]);
-                gaussianCosts[d].push_back(newPrediction.mean);
+                realPointHistory[j][d] = points[j * dimension + d];
             }
         }
-        
-
-    }
-    // ei bestpoint of ALL
-    std::vector<double> bestPoint = randomPoints[0];
-    float bestEI = -std::numeric_limits<double>::infinity();
-    for (int i = 0; i < gaussianHistory[0].size(); ++i) {
-        std::vector<double> point(dimension);
-        for (size_t d = 0; d < dimension; ++d) {
-            point[d] = gaussianHistory[d][i];
+        std::vector<double> realCosts(costs.begin(), costs.begin() + static_cast<std::ptrdiff_t>(numRealPoints));
+        std::vector<double> perihelionPoint = perihelion_diagonal_all(currentBest, realPointHistory, realCosts, method);
+        clampUnitPoint(perihelionPoint);
+        const GaussianPrediction perihelionPrediction = surrogate.predict(perihelionPoint);
+        const double logEI = computeLogExpectedImprovement(perihelionPrediction, bestCost);
+        candidatePoints.push_back(perihelionPoint);
+        candidateNegLogEI.push_back(-logEI);
+        if (logEI > bestLogEI) {
+            bestLogEI = logEI;
+            bestPoint = perihelionPoint;
         }
-        GaussianPrediction prediction = surrogate.predict(point);
-        double improvement = currentBest[0] - prediction.mean; // Assuming minimization
-        double ei = improvement * normCDF(improvement / sqrt(prediction.variance)) + sqrt(prediction.variance) * normPDF(improvement / sqrt(prediction.variance));
-        if (ei > bestEI) {
-            bestEI = ei;
-            bestPoint = point;
+    }
+    constexpr int perihelion_iters = 30;
+    constexpr int perihelion_random_start = 5;
+    const size_t origSize = candidatePoints.size();
+    std::vector<size_t> startIndices(origSize);
+    std::iota(startIndices.begin(), startIndices.end(), 0);
+    std::mt19937 shuffler(static_cast<unsigned int>(std::rand()));
+    std::shuffle(startIndices.begin(), startIndices.end(), shuffler);
+    const size_t numStarts = std::min<size_t>(perihelion_random_start, origSize);
+    for (size_t s = 0; s < numStarts; ++s) {
+        std::vector<std::vector<double>> trajPoints = candidatePoints;
+        std::vector<double> trajNegLogEI = candidateNegLogEI;
+        std::vector<double> current = candidatePoints[startIndices[s]];
+        for (int j = 0; j < perihelion_iters; ++j) {
+            std::vector<double> newPoint = perihelion_diagonal_all(current, trajPoints, trajNegLogEI, method);
+            clampUnitPoint(newPoint);
+            const GaussianPrediction newPrediction = surrogate.predict(newPoint);
+            const double logEI = computeLogExpectedImprovement(newPrediction, bestCost);
+            if (logEI > bestLogEI) {
+                bestLogEI = logEI;
+                bestPoint = newPoint;
+            }
+            trajPoints.push_back(newPoint);
+            trajNegLogEI.push_back(-logEI);
+            if (nDimensionalDistance(newPoint, current) < 1e-7) {
+                break;
+            }
+            current = newPoint;
+        }
+    }
+    return bestPoint;
+}
+inline std::vector<double> expectedImprovementPerihelionDefault(
+    const SurrogateModel& surrogate,
+    const std::vector<double>& currentBest,
+    const std::vector<double>& points,
+    const std::vector<double>& costs
+) {
+    return expectedImprovementPerihelion(surrogate, currentBest, points, costs, PerihelionMethod::HALLEY);
+}
+inline std::vector<double> expectedImprovementLBFGS(
+    const SurrogateModel& surrogate,
+    const std::vector<double>& currentBest,
+    const std::vector<double>& points,
+    const std::vector<double>& costs
+) {
+    (void)points;
+    const size_t dimension = std::max<size_t>(1, currentBest.size());
+    const double bestCost = costs.empty() ? 0.0 : *std::min_element(costs.begin(), costs.end());
+    auto negLogEI = [&](const std::vector<double>& x) -> double {
+        return -computeLogExpectedImprovement(surrogate.predict(x), bestCost);
+    };
+    constexpr int numSeedSamples = 64;
+    constexpr int numRestarts = 8;
+    std::vector<std::pair<double, std::vector<double>>> scoredSeeds;
+    scoredSeeds.reserve(numSeedSamples + 1);
+    if (!currentBest.empty()) {
+        std::vector<double> clampedBest = currentBest;
+        clampUnitPoint(clampedBest);
+        scoredSeeds.push_back({negLogEI(clampedBest), clampedBest});
+    }
+    for (int i = 0; i < numSeedSamples; ++i) {
+        std::vector<double> candidate(dimension);
+        for (size_t d = 0; d < dimension; ++d) {
+            candidate[d] = static_cast<double>(std::rand()) / static_cast<double>(RAND_MAX);
+        }
+        scoredSeeds.push_back({negLogEI(candidate), candidate});
+    }
+    std::sort(
+        scoredSeeds.begin(),
+        scoredSeeds.end(),
+        [](const auto& a, const auto& b) { return a.first < b.first; }
+    );
+    std::vector<double> bestPoint = scoredSeeds.front().second;
+    double bestNegLogEI = scoredSeeds.front().first;
+    const LbfgsConfig config;
+    const int restarts = std::min<int>(numRestarts, static_cast<int>(scoredSeeds.size()));
+    for (int r = 0; r < restarts; ++r) {
+        std::vector<double> optimized = lbfgsMinimizeBox(scoredSeeds[r].second, negLogEI, config);
+        clampUnitPoint(optimized);
+        const double val = negLogEI(optimized);
+        if (val < bestNegLogEI) {
+            bestNegLogEI = val;
+            bestPoint = optimized;
         }
     }
     return bestPoint;
