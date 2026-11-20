@@ -30,6 +30,48 @@ public:
         return std::exp(-distSq / (2.0 * lengthScale * lengthScale));
     }
 };
+class Matern12Kernel : public Kernel {
+private:
+    double lengthScale;
+public:
+    explicit Matern12Kernel(double lengthScale) : lengthScale(std::max(1e-6, lengthScale)) {}
+    double evaluate(const std::vector<double>& x1, const std::vector<double>& x2) const override {
+        const double dist = nDimensionalDistance(x1, x2);
+        return std::exp(-dist / lengthScale);
+    }
+};
+class Matern32Kernel : public Kernel {
+private:
+    double lengthScale;
+public:
+    explicit Matern32Kernel(double lengthScale) : lengthScale(std::max(1e-6, lengthScale)) {}
+    double evaluate(const std::vector<double>& x1, const std::vector<double>& x2) const override {
+        const double s = std::sqrt(3.0) * nDimensionalDistance(x1, x2) / lengthScale;
+        return (1.0 + s) * std::exp(-s);
+    }
+};
+class Matern52Kernel : public Kernel {
+private:
+    double lengthScale;
+public:
+    explicit Matern52Kernel(double lengthScale) : lengthScale(std::max(1e-6, lengthScale)) {}
+    double evaluate(const std::vector<double>& x1, const std::vector<double>& x2) const override {
+        const double s = std::sqrt(5.0) * nDimensionalDistance(x1, x2) / lengthScale;
+        return (1.0 + s + (s * s) / 3.0) * std::exp(-s);
+    }
+};
+class RationalQuadraticKernel : public Kernel {
+private:
+    double lengthScale;
+    double alpha;
+public:
+    explicit RationalQuadraticKernel(double lengthScale, double alpha = 1.0)
+        : lengthScale(std::max(1e-6, lengthScale)), alpha(std::max(1e-3, alpha)) {}
+    double evaluate(const std::vector<double>& x1, const std::vector<double>& x2) const override {
+        const double distSq = squaredEuclideanDistance(x1, x2);
+        return std::pow(1.0 + distSq / (2.0 * alpha * lengthScale * lengthScale), -alpha);
+    }
+};
 class GaussianProcess : public SurrogateModel {
 private:
     Kernel* kernel;
@@ -162,14 +204,13 @@ public:
             }
             selectedCosts[i] = costs[idx];
         }
-        const std::vector<double> coefficients = solvePolynomialLeastSquares(selectedSamples, selectedCosts, trainingDim, polynomial_degree);
-        std::vector<std::vector<int>> exponentsList;
-        std::vector<int> current(trainingDim, 0);
-        generateExponents(0, 0, polynomial_degree, current, exponentsList);
-        const int num_coefficients = static_cast<int>(exponentsList.size());
+        const PolynomialFitResult fit = fitPolynomialLeastSquares(selectedSamples, selectedCosts, trainingDim, polynomial_degree);
+        const int num_coefficients = static_cast<int>(fit.exponentsList.size());
+        std::vector<double> phi(num_coefficients, 0.0);
         double prediction = 0.0;
         for (int i = 0; i < num_coefficients; ++i) {
-            prediction += coefficients[i] * evaluateMonomial(question, exponentsList[i]);
+            phi[i] = evaluateMonomial(question, fit.exponentsList[i]);
+            prediction += fit.coefficients[i] * phi[i];
         }
         double noise_variance = 0.0;
         if (k_points > num_coefficients) {
@@ -177,7 +218,7 @@ public:
                 std::vector<double> sample(selectedSamples.begin() + i * trainingDim, selectedSamples.begin() + (i + 1) * trainingDim);
                 double approx = 0.0;
                 for (int j = 0; j < num_coefficients; ++j) {
-                    approx += coefficients[j] * evaluateMonomial(sample, exponentsList[j]);
+                    approx += fit.coefficients[j] * evaluateMonomial(sample, fit.exponentsList[j]);
                 }
                 const double error = approx - selectedCosts[i];
                 noise_variance += error * error;
@@ -188,7 +229,17 @@ public:
             noise_variance = stats.std_dev * stats.std_dev;
         }
         noise_variance = std::max(1e-6, noise_variance);
-        return {prediction, noise_variance};
+        double leverage = 1.0;
+        if (fit.designFactor.size == num_coefficients && num_coefficients > 0) {
+            const std::vector<double> z = forwardSubstituteCholesky(fit.designFactor, phi);
+            double zSqSum = 0.0;
+            for (int i = 0; i < num_coefficients; ++i) {
+                zSqSum += z[i] * z[i];
+            }
+            leverage = std::max(1e-6, zSqSum);
+        }
+        const double predictive_variance = std::max(1e-6, noise_variance * leverage);
+        return {prediction, predictive_variance};
     }
 };
 class RandomForest : public SurrogateModel {

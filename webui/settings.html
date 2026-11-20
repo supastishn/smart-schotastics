@@ -3,12 +3,12 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Settings - OptimaBay</title>
+    <title>Settings - SmartStochastics</title>
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
     <nav>
-        <span class="brand">OptimaBay</span>
+        <span class="brand"><span class="brand-smart">Smart</span><span class="brand-stochastics">Stochastics</span></span>
         <a href="dashboard.html">Dashboard</a>
         <a href="index.html">Experiments</a>
         <a href="settings.html" class="active-tab">Settings</a>
@@ -24,12 +24,8 @@
                 </select>
             </div>
             <div class="form-group">
-                <label for="defaultSurrogate">Default Surrogate Model</label>
-                <select id="defaultSurrogate">
-                    <option value="council">Council (GP + Polynomial)</option>
-                    <option value="gaussian_process">Gaussian Process (RBF)</option>
-                    <option value="polynomial">Piecewise Polynomial</option>
-                </select>
+                <label>Default Surrogates in Council</label>
+                <div id="defaultSurrogatesContainer" class="surrogate-checkbox-grid"></div>
             </div>
             <div class="form-group">
                 <label for="defaultAcquisition">Default Acquisition Optimizer</label>
@@ -45,36 +41,55 @@
                     <input type="number" id="defaultWarmupTrials" min="1" max="50" value="5">
                 </div>
                 <div class="form-group">
-                    <label for="defaultLengthScale">Default RBF Length Scale</label>
+                    <label for="defaultLengthScale">Default Kernel Length Scale</label>
                     <input type="number" id="defaultLengthScale" min="0.01" max="5" step="0.05" value="0.3">
+                </div>
+                <div class="form-group">
+                    <label for="defaultPolyPoints">Default Poly Points</label>
+                    <input type="number" id="defaultPolyPoints" min="4" max="100" value="15">
                 </div>
             </div>
             <button class="btn btn-primary" id="saveSettingsButton">Save Settings</button>
         </div>
-        <div class="settings-panel wasm-info-panel">
-            <h3>WebAssembly Build Command</h3>
-            <p class="muted-note">Optimization runs strictly in the compiled C++ WebAssembly engine (<code>optima.js</code> + <code>optima.wasm</code>). Once Emscripten is installed, run:</p>
-            <pre class="code-snippet">./webui/build_wasm.sh</pre>
-        </div>
     </main>
-    <footer>
-        Experiment Optimizer &mdash; Ask &amp; Tell Interface
-    </footer>
     <script>
         (function() {
             const STORAGE_KEY_SETTINGS = 'settings';
+            const SURROGATE_OPTIONS = [
+                { id: 'gp_rbf', label: 'GP (RBF)' },
+                { id: 'gp_matern52', label: 'GP (Matérn 5/2)' },
+                { id: 'gp_matern32', label: 'GP (Matérn 3/2)' },
+                { id: 'gp_matern12', label: 'GP (Matérn 1/2)' },
+                { id: 'gp_rq', label: 'GP (Rational Quadratic)' },
+                { id: 'poly_1', label: 'Polynomial (Deg 1)' },
+                { id: 'poly_2', label: 'Polynomial (Deg 2)' },
+                { id: 'poly_3', label: 'Polynomial (Deg 3)' },
+                { id: 'poly_4', label: 'Polynomial (Deg 4)' }
+            ];
             const DEFAULTS = {
                 defaultDirection: 'minimize',
-                defaultSurrogate: 'council',
+                defaultSurrogates: ['gp_rbf', 'poly_2'],
                 defaultAcquisition: 'lbfgs',
                 defaultWarmupTrials: 5,
-                defaultLengthScale: 0.3
+                defaultLengthScale: 0.3,
+                defaultPolyPoints: 15
             };
+            function migrateLegacySurrogates(parsed) {
+                if (Array.isArray(parsed.defaultSurrogates) && parsed.defaultSurrogates.length > 0) {
+                    return parsed.defaultSurrogates;
+                }
+                if (parsed.defaultSurrogate === 'gaussian_process') return ['gp_rbf'];
+                if (parsed.defaultSurrogate === 'polynomial') return ['poly_2'];
+                return DEFAULTS.defaultSurrogates.slice();
+            }
             function loadSettingsFromStorage() {
                 const raw = localStorage.getItem(STORAGE_KEY_SETTINGS);
                 if (!raw) return Object.assign({}, DEFAULTS);
                 try {
-                    return Object.assign({}, DEFAULTS, JSON.parse(raw));
+                    const parsed = JSON.parse(raw);
+                    const merged = Object.assign({}, DEFAULTS, parsed);
+                    merged.defaultSurrogates = migrateLegacySurrogates(parsed);
+                    return merged;
                 } catch (e) {
                     return Object.assign({}, DEFAULTS);
                 }
@@ -82,21 +97,85 @@
             function saveSettingsToStorage(settings) {
                 localStorage.setItem(STORAGE_KEY_SETTINGS, JSON.stringify(settings));
             }
+            function renderSurrogateCheckboxes(container, selectedIds) {
+                container.innerHTML = '';
+                const standardIds = SURROGATE_OPTIONS.map(function(o) { return o.id; });
+                let customDegree = 5;
+                let customChecked = false;
+                selectedIds.forEach(function(id) {
+                    if (standardIds.indexOf(id) < 0 && id.indexOf('poly_') === 0) {
+                        const d = parseInt(id.slice(5), 10);
+                        if (!Number.isNaN(d) && d >= 1) {
+                            customDegree = d;
+                            customChecked = true;
+                        }
+                    }
+                });
+                SURROGATE_OPTIONS.forEach(function(opt) {
+                    const label = document.createElement('label');
+                    label.className = 'surrogate-checkbox-item';
+                    const cb = document.createElement('input');
+                    cb.type = 'checkbox';
+                    cb.value = opt.id;
+                    cb.checked = selectedIds.indexOf(opt.id) >= 0;
+                    label.appendChild(cb);
+                    label.appendChild(document.createTextNode(' ' + opt.label));
+                    container.appendChild(label);
+                });
+                const customLabel = document.createElement('label');
+                customLabel.className = 'surrogate-checkbox-item surrogate-custom-item';
+                const customCb = document.createElement('input');
+                customCb.type = 'checkbox';
+                customCb.className = 'custom-poly-checkbox';
+                customCb.checked = customChecked;
+                const degInput = document.createElement('input');
+                degInput.type = 'number';
+                degInput.min = '1';
+                degInput.max = '10';
+                degInput.value = String(customDegree);
+                degInput.className = 'custom-poly-degree-input';
+                customLabel.appendChild(customCb);
+                customLabel.appendChild(document.createTextNode(' Polynomial (Deg '));
+                customLabel.appendChild(degInput);
+                customLabel.appendChild(document.createTextNode(')'));
+                container.appendChild(customLabel);
+            }
+            function readSurrogateCheckboxes(container) {
+                const selected = [];
+                container.querySelectorAll('input[type="checkbox"]:not(.custom-poly-checkbox)').forEach(function(cb) {
+                    if (cb.checked) selected.push(cb.value);
+                });
+                const customCb = container.querySelector('.custom-poly-checkbox');
+                const degInput = container.querySelector('.custom-poly-degree-input');
+                if (customCb && customCb.checked && degInput) {
+                    const deg = Math.max(1, Math.min(10, parseInt(degInput.value, 10) || 5));
+                    const id = 'poly_' + deg;
+                    if (selected.indexOf(id) < 0) selected.push(id);
+                }
+                return selected;
+            }
             function loadSettingsIntoForm() {
                 const settings = loadSettingsFromStorage();
                 document.getElementById('defaultDirection').value = settings.defaultDirection;
-                document.getElementById('defaultSurrogate').value = settings.defaultSurrogate;
                 document.getElementById('defaultAcquisition').value = settings.defaultAcquisition;
                 document.getElementById('defaultWarmupTrials').value = settings.defaultWarmupTrials;
                 document.getElementById('defaultLengthScale').value = settings.defaultLengthScale;
+                document.getElementById('defaultPolyPoints').value = settings.defaultPolyPoints;
+                renderSurrogateCheckboxes(document.getElementById('defaultSurrogatesContainer'), settings.defaultSurrogates);
             }
             function saveSettings() {
+                const selected = readSurrogateCheckboxes(document.getElementById('defaultSurrogatesContainer'));
+                if (selected.length === 0) {
+                    alert('Please select at least one default surrogate model.');
+                    return;
+                }
                 const settings = loadSettingsFromStorage();
                 settings.defaultDirection = document.getElementById('defaultDirection').value;
-                settings.defaultSurrogate = document.getElementById('defaultSurrogate').value;
+                settings.defaultSurrogates = selected;
                 settings.defaultAcquisition = document.getElementById('defaultAcquisition').value;
                 settings.defaultWarmupTrials = Math.max(1, parseInt(document.getElementById('defaultWarmupTrials').value, 10) || 5);
                 settings.defaultLengthScale = Math.max(0.01, parseFloat(document.getElementById('defaultLengthScale').value) || 0.3);
+                settings.defaultPolyPoints = Math.max(4, parseInt(document.getElementById('defaultPolyPoints').value, 10) || 15);
                 saveSettingsToStorage(settings);
                 alert('Settings saved.');
             }

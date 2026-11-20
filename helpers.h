@@ -233,26 +233,38 @@ inline double evaluateMonomial(const std::vector<double>& sample, const std::vec
     }
     return val;
 }
-inline std::vector<double> solvePolynomialLeastSquares(
+struct PolynomialFitResult {
+    std::vector<double> coefficients;
+    CholeskyFactor designFactor;
+    std::vector<std::vector<int>> exponentsList;
+};
+inline PolynomialFitResult fitPolynomialLeastSquares(
     const std::vector<double>& selectedSamples,
     const std::vector<double>& selectedCosts,
     int trainingDim,
     int degree,
     double ridge = 1e-6
 ) {
+    PolynomialFitResult result;
     const int k_points = static_cast<int>(selectedCosts.size());
-    std::vector<std::vector<int>> exponentsList;
-    std::vector<int> current(trainingDim, 0);
-    generateExponents(0, 0, degree, current, exponentsList);
-    const int num_coefficients = static_cast<int>(exponentsList.size());
+    std::vector<int> current(std::max(0, trainingDim), 0);
+    if (trainingDim > 0) {
+        generateExponents(0, 0, degree, current, result.exponentsList);
+    }
+    const int num_coefficients = static_cast<int>(result.exponentsList.size());
     if (k_points <= 0 || trainingDim <= 0 || num_coefficients <= 0) {
-        return std::vector<double>(std::max(0, num_coefficients), 0.0);
+        result.coefficients.assign(std::max(0, num_coefficients), 0.0);
+        result.designFactor.size = 0;
+        return result;
     }
     std::vector<double> evaluations(k_points * num_coefficients, 0.0);
     for (int i = 0; i < k_points; ++i) {
-        std::vector<double> sample(selectedSamples.begin() + i * trainingDim, selectedSamples.begin() + (i + 1) * trainingDim);
+        std::vector<double> sample(
+            selectedSamples.begin() + static_cast<std::ptrdiff_t>(i) * trainingDim,
+            selectedSamples.begin() + static_cast<std::ptrdiff_t>(i + 1) * trainingDim
+        );
         for (int j = 0; j < num_coefficients; ++j) {
-            evaluations[i * num_coefficients + j] = evaluateMonomial(sample, exponentsList[j]);
+            evaluations[i * num_coefficients + j] = evaluateMonomial(sample, result.exponentsList[j]);
         }
     }
     std::vector<double> leastSquaresMatrix(num_coefficients * num_coefficients, 0.0);
@@ -272,6 +284,17 @@ inline std::vector<double> solvePolynomialLeastSquares(
         }
         leastSquaresResults[row] = resSum;
     }
-    return choleskyDecomposition(leastSquaresMatrix, leastSquaresResults, num_coefficients, ridge);
+    result.designFactor = computeCholeskyFactor(leastSquaresMatrix, num_coefficients, ridge);
+    result.coefficients = solveWithCholesky(result.designFactor, leastSquaresResults);
+    return result;
+}
+inline std::vector<double> solvePolynomialLeastSquares(
+    const std::vector<double>& selectedSamples,
+    const std::vector<double>& selectedCosts,
+    int trainingDim,
+    int degree,
+    double ridge = 1e-6
+) {
+    return fitPolynomialLeastSquares(selectedSamples, selectedCosts, trainingDim, degree, ridge).coefficients;
 }
 #endif

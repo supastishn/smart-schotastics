@@ -3,12 +3,12 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Dashboard - OptimaBay</title>
+    <title>Dashboard - SmartStochastics</title>
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
     <nav>
-        <span class="brand">OptimaBay</span>
+        <span class="brand"><span class="brand-smart">Smart</span><span class="brand-stochastics">Stochastics</span></span>
         <a href="dashboard.html" class="active-tab">Dashboard</a>
         <a href="index.html">Experiments</a>
         <a href="settings.html">Settings</a>
@@ -18,9 +18,6 @@
         <div class="stats-grid" id="dashboardStats"></div>
         <section class="dashboard-overview" id="dashboardOverview"></section>
     </main>
-    <footer>
-        Experiment Optimizer &mdash; Ask &amp; Tell Interface
-    </footer>
     <script>
         (function() {
             const STORAGE_KEY_EXPERIMENTS = 'experiments';
@@ -79,13 +76,36 @@
                     overview.innerHTML = '<div class="empty-state">No experiments yet. Go to Experiments to create one.</div>';
                     return;
                 }
+                function formatSurrogateId(id) {
+                    if (id === 'gp_rbf' || id === 'gaussian_process') return 'GP (RBF)';
+                    if (id === 'gp_matern52') return 'GP (Matérn 5/2)';
+                    if (id === 'gp_matern32') return 'GP (Matérn 3/2)';
+                    if (id === 'gp_matern12') return 'GP (Matérn 1/2)';
+                    if (id === 'gp_rq') return 'GP (RQ)';
+                    if (id.indexOf('poly_') === 0) return 'Poly (Deg ' + id.slice(5) + ')';
+                    if (id === 'polynomial') return 'Poly';
+                    return id;
+                }
+                function formatOptimizerSummary(cfg) {
+                    const ids = Array.isArray(cfg.surrogates) && cfg.surrogates.length > 0
+                        ? cfg.surrogates
+                        : (cfg.surrogate === 'gaussian_process'
+                            ? ['gp_rbf']
+                            : (cfg.surrogate === 'polynomial' ? ['poly_' + (cfg.polyDegree || 2)] : ['gp_rbf', 'poly_' + (cfg.polyDegree || 2)]));
+                    const surrogateText = ids.length === 1
+                        ? formatSurrogateId(ids[0])
+                        : ('Council (' + ids.map(formatSurrogateId).join(', ') + ')');
+                    return surrogateText + ' / ' + (cfg.acquisition || 'lbfgs');
+                }
                 const rows = experiments.map(function(exp) {
                     const cfg = exp.config || {};
                     const trialsCount = Array.isArray(exp.trials) ? exp.trials.length : 0;
+                    const rawStatus = String(exp.status || 'idle');
+                    const statusLabel = rawStatus.charAt(0).toUpperCase() + rawStatus.slice(1);
                     return '<tr>' +
-                        '<td>' + escapeHtml(exp.name) + '</td>' +
-                        '<td>' + escapeHtml(exp.status || 'idle') + '</td>' +
-                        '<td>' + escapeHtml((cfg.surrogate || 'council') + ' / ' + (cfg.acquisition || 'lbfgs')) + '</td>' +
+                        '<td><a class="table-link" href="index.html?exp=' + encodeURIComponent(exp.id) + '">' + escapeHtml(exp.name) + '</a></td>' +
+                        '<td>' + escapeHtml(statusLabel) + '</td>' +
+                        '<td>' + escapeHtml(formatOptimizerSummary(cfg)) + '</td>' +
                         '<td>' + trialsCount + '</td>' +
                         '<td>' + escapeHtml(exp.objective + ' (' + exp.direction + ')') + '</td>' +
                         '<td><strong>' + escapeHtml(getBestObjective(exp)) + '</strong></td>' +

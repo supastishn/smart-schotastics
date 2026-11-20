@@ -123,6 +123,23 @@
     function isReady() {
         return wasmModuleInstance !== null;
     }
+    function resolveSurrogateIds(config) {
+        if (config && Array.isArray(config.surrogates) && config.surrogates.length > 0) {
+            return config.surrogates.map(String);
+        }
+        const legacy = config && config.surrogate ? config.surrogate : 'council';
+        const deg = Math.max(1, Number(config && config.polyDegree) || 2);
+        if (legacy === 'gaussian_process') return ['gp_rbf'];
+        if (legacy === 'polynomial') return ['poly_' + deg];
+        return ['gp_rbf', 'poly_' + deg];
+    }
+    function buildSurrogateIdVector(config) {
+        const vec = new wasmModuleInstance.VectorString();
+        resolveSurrogateIds(config).forEach(function(id) {
+            vec.push_back(id);
+        });
+        return vec;
+    }
     function suggestNext(experiment, config) {
         if (!wasmModuleInstance) {
             return null;
@@ -135,6 +152,7 @@
         const paramVec = new wasmModuleInstance.VectorParamConfig();
         const flatVec = new wasmModuleInstance.VectorDouble();
         const objVec = new wasmModuleInstance.VectorDouble();
+        const surrogateVec = buildSurrogateIdVector(config);
         try {
             parsedParams.forEach(function(p) {
                 paramVec.push_back({
@@ -157,7 +175,7 @@
                 flatVec,
                 objVec,
                 experiment.direction === 'maximize',
-                config.surrogate || 'council',
+                surrogateVec,
                 config.acquisition || 'lbfgs',
                 Number(config.lengthScale) || 0.3,
                 Number(config.polyDegree) || 2,
@@ -179,12 +197,132 @@
             paramVec.delete();
             flatVec.delete();
             objVec.delete();
+            surrogateVec.delete();
+        }
+    }
+    function predictPoint(experiment, config, paramValuesObj) {
+        if (!wasmModuleInstance) {
+            return null;
+        }
+        const parsedParams = (experiment.parameters || []).map(parseParamConfig);
+        const dim = parsedParams.length;
+        const trials = experiment.trials || [];
+        if (dim === 0 || trials.length === 0) {
+            return null;
+        }
+        const paramVec = new wasmModuleInstance.VectorParamConfig();
+        const flatVec = new wasmModuleInstance.VectorDouble();
+        const objVec = new wasmModuleInstance.VectorDouble();
+        const queryVec = new wasmModuleInstance.VectorDouble();
+        const surrogateVec = buildSurrogateIdVector(config);
+        try {
+            parsedParams.forEach(function(p) {
+                paramVec.push_back({
+                    name: p.name,
+                    type: p.type,
+                    lower: p.lower,
+                    upper: p.upper,
+                    log_scale: p.log_scale,
+                    num_categories: p.num_categories
+                });
+            });
+            trials.forEach(function(t) {
+                const encoded = encodeTrialParams(t.params, parsedParams);
+                encoded.forEach(function(v) { flatVec.push_back(v); });
+                objVec.push_back(Number(t.objective));
+            });
+            const queryEncoded = encodeTrialParams(paramValuesObj, parsedParams);
+            queryEncoded.forEach(function(v) { queryVec.push_back(v); });
+            const res = wasmModuleInstance.predictObjectiveAtPoint(
+                paramVec,
+                flatVec,
+                objVec,
+                queryVec,
+                experiment.direction === 'maximize',
+                surrogateVec,
+                Number(config.lengthScale) || 0.3,
+                Number(config.polyDegree) || 2,
+                Number(config.polyPoints) || 15
+            );
+            return {
+                mean: res.mean,
+                stdDev: res.std_dev
+            };
+        } finally {
+            paramVec.delete();
+            flatVec.delete();
+            objVec.delete();
+            queryVec.delete();
+            surrogateVec.delete();
+        }
+    }
+    function predictBatch(experiment, config, numericQueryPointsList) {
+        if (!wasmModuleInstance) {
+            return null;
+        }
+        const parsedParams = (experiment.parameters || []).map(parseParamConfig);
+        const dim = parsedParams.length;
+        const trials = experiment.trials || [];
+        if (dim === 0 || trials.length === 0 || !Array.isArray(numericQueryPointsList) || numericQueryPointsList.length === 0) {
+            return null;
+        }
+        const paramVec = new wasmModuleInstance.VectorParamConfig();
+        const flatVec = new wasmModuleInstance.VectorDouble();
+        const objVec = new wasmModuleInstance.VectorDouble();
+        const flatQueryVec = new wasmModuleInstance.VectorDouble();
+        const surrogateVec = buildSurrogateIdVector(config);
+        try {
+            parsedParams.forEach(function(p) {
+                paramVec.push_back({
+                    name: p.name,
+                    type: p.type,
+                    lower: p.lower,
+                    upper: p.upper,
+                    log_scale: p.log_scale,
+                    num_categories: p.num_categories
+                });
+            });
+            trials.forEach(function(t) {
+                const encoded = encodeTrialParams(t.params, parsedParams);
+                encoded.forEach(function(v) { flatVec.push_back(v); });
+                objVec.push_back(Number(t.objective));
+            });
+            numericQueryPointsList.forEach(function(pt) {
+                for (let d = 0; d < dim; d++) {
+                    flatQueryVec.push_back(Number(pt[d]));
+                }
+            });
+            const resVec = wasmModuleInstance.predictObjectiveBatch(
+                paramVec,
+                flatVec,
+                objVec,
+                flatQueryVec,
+                experiment.direction === 'maximize',
+                surrogateVec,
+                Number(config.lengthScale) || 0.3,
+                Number(config.polyDegree) || 2,
+                Number(config.polyPoints) || 15
+            );
+            const output = [];
+            for (let i = 0; i < resVec.size(); i++) {
+                const item = resVec.get(i);
+                output.push({ mean: item.mean, stdDev: item.std_dev });
+            }
+            resVec.delete();
+            return output;
+        } finally {
+            paramVec.delete();
+            flatVec.delete();
+            objVec.delete();
+            surrogateVec.delete();
         }
     }
     globalScope.OptimaEngine = {
         init: init,
         isReady: isReady,
         parseParamConfig: parseParamConfig,
-        suggestNext: suggestNext
+        suggestNext: suggestNext,
+        predictPoint: predictPoint,
+        predictBatch: predictBatch
     };
 })(window);

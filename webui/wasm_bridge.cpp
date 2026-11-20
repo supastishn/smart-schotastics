@@ -80,32 +80,77 @@ inline AcquisitionFunction selectAcquisitionFunction(const std::string& acquisit
     return expectedImprovementLBFGS;
 }
 struct SurrogateBundle {
-    std::unique_ptr<RBFKernel> kernel;
-    std::unique_ptr<GaussianProcess> gp;
-    std::unique_ptr<PiecewisePolynomialModel> poly;
+    std::vector<std::unique_ptr<Kernel>> kernels;
+    std::vector<std::unique_ptr<SurrogateModel>> models;
     std::unique_ptr<Council> council;
     SurrogateModel* active;
 };
+inline int parsePolynomialDegreeId(const std::string& id, int fallbackDegree) {
+    if (id.rfind("poly_", 0) == 0 && id.size() > 5) {
+        try {
+            const int parsed = std::stoi(id.substr(5));
+            return std::max(1, std::min(10, parsed));
+        } catch (...) {
+            return std::max(1, fallbackDegree);
+        }
+    }
+    return std::max(1, fallbackDegree);
+}
+inline void addSurrogateById(
+    SurrogateBundle& bundle,
+    const std::string& id,
+    double length_scale,
+    int fallback_poly_degree,
+    int poly_points
+) {
+    const double safeLen = std::max(1e-3, length_scale);
+    const int safePoints = std::max(4, poly_points);
+    if (id == "gp_rbf" || id == "gaussian_process") {
+        bundle.kernels.push_back(std::make_unique<RBFKernel>(safeLen));
+        bundle.models.push_back(std::make_unique<GaussianProcess>(bundle.kernels.back().get(), 1e-5));
+    } else if (id == "gp_matern52") {
+        bundle.kernels.push_back(std::make_unique<Matern52Kernel>(safeLen));
+        bundle.models.push_back(std::make_unique<GaussianProcess>(bundle.kernels.back().get(), 1e-5));
+    } else if (id == "gp_matern32") {
+        bundle.kernels.push_back(std::make_unique<Matern32Kernel>(safeLen));
+        bundle.models.push_back(std::make_unique<GaussianProcess>(bundle.kernels.back().get(), 1e-5));
+    } else if (id == "gp_matern12") {
+        bundle.kernels.push_back(std::make_unique<Matern12Kernel>(safeLen));
+        bundle.models.push_back(std::make_unique<GaussianProcess>(bundle.kernels.back().get(), 1e-5));
+    } else if (id == "gp_rq") {
+        bundle.kernels.push_back(std::make_unique<RationalQuadraticKernel>(safeLen, 1.0));
+        bundle.models.push_back(std::make_unique<GaussianProcess>(bundle.kernels.back().get(), 1e-5));
+    } else if (id == "polynomial" || id.rfind("poly_", 0) == 0) {
+        const int degree = parsePolynomialDegreeId(id, fallback_poly_degree);
+        bundle.models.push_back(std::make_unique<PiecewisePolynomialModel>(degree, safePoints));
+    } else if (id == "council") {
+        bundle.kernels.push_back(std::make_unique<RBFKernel>(safeLen));
+        bundle.models.push_back(std::make_unique<GaussianProcess>(bundle.kernels.back().get(), 1e-5));
+        bundle.models.push_back(std::make_unique<PiecewisePolynomialModel>(std::max(1, fallback_poly_degree), safePoints));
+    }
+}
 inline SurrogateBundle createSurrogateBundle(
-    const std::string& surrogate_type,
-    double rbf_length_scale,
-    int poly_degree,
+    const std::vector<std::string>& surrogate_ids,
+    double length_scale,
+    int fallback_poly_degree,
     int poly_points
 ) {
     SurrogateBundle bundle;
-    bundle.kernel = std::make_unique<RBFKernel>(std::max(1e-3, rbf_length_scale));
-    bundle.gp = std::make_unique<GaussianProcess>(bundle.kernel.get(), 1e-5);
-    bundle.poly = std::make_unique<PiecewisePolynomialModel>(
-        std::max(1, poly_degree),
-        std::max(4, poly_points)
-    );
-    if (surrogate_type == "gaussian_process") {
-        bundle.active = bundle.gp.get();
-    } else if (surrogate_type == "polynomial") {
-        bundle.active = bundle.poly.get();
+    for (const std::string& id : surrogate_ids) {
+        addSurrogateById(bundle, id, length_scale, fallback_poly_degree, poly_points);
+    }
+    if (bundle.models.empty()) {
+        addSurrogateById(bundle, "gp_rbf", length_scale, fallback_poly_degree, poly_points);
+    }
+    if (bundle.models.size() == 1) {
+        bundle.active = bundle.models[0].get();
     } else {
-        std::vector<SurrogateModel*> models = {bundle.gp.get(), bundle.poly.get()};
-        bundle.council = std::make_unique<Council>(models, RegionArgs{1, 10});
+        std::vector<SurrogateModel*> modelPtrs;
+        modelPtrs.reserve(bundle.models.size());
+        for (const auto& m : bundle.models) {
+            modelPtrs.push_back(m.get());
+        }
+        bundle.council = std::make_unique<Council>(modelPtrs, RegionArgs{1, 10});
         bundle.active = bundle.council.get();
     }
     return bundle;
@@ -115,7 +160,7 @@ inline WasmSuggestionResult suggestNextTrial(
     const std::vector<double>& flat_trial_params,
     const std::vector<double>& trial_objectives,
     bool maximize,
-    const std::string& surrogate_type,
+    const std::vector<std::string>& surrogate_ids,
     const std::string& acquisition_type,
     double rbf_length_scale,
     int poly_degree,
@@ -152,7 +197,7 @@ inline WasmSuggestionResult suggestNextTrial(
     for (size_t i = 0; i < num_trials; ++i) {
         oriented_costs[i] = maximize ? -trial_objectives[i] : trial_objectives[i];
     }
-    SurrogateBundle bundle = createSurrogateBundle(surrogate_type, rbf_length_scale, poly_degree, poly_points);
+    SurrogateBundle bundle = createSurrogateBundle(surrogate_ids, rbf_length_scale, poly_degree, poly_points);
     AcquisitionFunction acq = selectAcquisitionFunction(acquisition_type);
     SmartBayesian optimizer(dummyBridgeCostFunction, bundle.active, acq, bounds);
     optimizer.set_training_data(used_samples, oriented_costs);
@@ -191,7 +236,7 @@ inline WasmPredictionResult predictObjectiveAtPoint(
     const std::vector<double>& trial_objectives,
     const std::vector<double>& query_point,
     bool maximize,
-    const std::string& surrogate_type,
+    const std::vector<std::string>& surrogate_ids,
     double rbf_length_scale,
     int poly_degree,
     int poly_points
@@ -218,7 +263,7 @@ inline WasmPredictionResult predictObjectiveAtPoint(
     }
     const ZScoreStats cost_stats = computeZScoreStats(oriented_costs);
     const std::vector<double> z_costs = normalizeCostsZScore(oriented_costs, cost_stats);
-    SurrogateBundle bundle = createSurrogateBundle(surrogate_type, rbf_length_scale, poly_degree, poly_points);
+    SurrogateBundle bundle = createSurrogateBundle(surrogate_ids, rbf_length_scale, poly_degree, poly_points);
     bundle.active->train(unit_samples, z_costs, static_cast<int>(num_trials));
     const GaussianPrediction pred = bundle.active->predict(normalizeInput(query_point, bounds));
     double unscaled_mean = pred.mean * cost_stats.std_dev + cost_stats.mean;
@@ -227,6 +272,59 @@ inline WasmPredictionResult predictObjectiveAtPoint(
     }
     const double unscaled_std = std::sqrt(std::max(1e-12, pred.variance)) * cost_stats.std_dev;
     return {unscaled_mean, unscaled_std};
+}
+inline std::vector<WasmPredictionResult> predictObjectiveBatch(
+    const std::vector<WasmParamConfig>& params,
+    const std::vector<double>& flat_trial_params,
+    const std::vector<double>& trial_objectives,
+    const std::vector<double>& flat_query_points,
+    bool maximize,
+    const std::vector<std::string>& surrogate_ids,
+    double rbf_length_scale,
+    int poly_degree,
+    int poly_points
+) {
+    const std::vector<ParameterBound> bounds = buildParameterBounds(params);
+    const size_t dim = bounds.size();
+    std::vector<WasmPredictionResult> results;
+    if (dim == 0 || trial_objectives.empty() || flat_trial_params.size() < dim || flat_query_points.size() < dim) {
+        return results;
+    }
+    const size_t num_trials = std::min(trial_objectives.size(), flat_trial_params.size() / dim);
+    std::vector<double> oriented_costs(num_trials, 0.0);
+    for (size_t i = 0; i < num_trials; ++i) {
+        oriented_costs[i] = maximize ? -trial_objectives[i] : trial_objectives[i];
+    }
+    std::vector<double> unit_samples;
+    unit_samples.reserve(num_trials * dim);
+    std::vector<double> raw_point(dim, 0.0);
+    for (size_t i = 0; i < num_trials; ++i) {
+        for (size_t d = 0; d < dim; ++d) {
+            raw_point[d] = flat_trial_params[i * dim + d];
+        }
+        const std::vector<double> unit_pt = normalizeInput(raw_point, bounds);
+        unit_samples.insert(unit_samples.end(), unit_pt.begin(), unit_pt.end());
+    }
+    const ZScoreStats cost_stats = computeZScoreStats(oriented_costs);
+    const std::vector<double> z_costs = normalizeCostsZScore(oriented_costs, cost_stats);
+    SurrogateBundle bundle = createSurrogateBundle(surrogate_ids, rbf_length_scale, poly_degree, poly_points);
+    bundle.active->train(unit_samples, z_costs, static_cast<int>(num_trials));
+    const size_t num_queries = flat_query_points.size() / dim;
+    results.reserve(num_queries);
+    std::vector<double> query_point(dim, 0.0);
+    for (size_t q = 0; q < num_queries; ++q) {
+        for (size_t d = 0; d < dim; ++d) {
+            query_point[d] = flat_query_points[q * dim + d];
+        }
+        const GaussianPrediction pred = bundle.active->predict(normalizeInput(query_point, bounds));
+        double unscaled_mean = pred.mean * cost_stats.std_dev + cost_stats.mean;
+        if (maximize) {
+            unscaled_mean = -unscaled_mean;
+        }
+        const double unscaled_std = std::sqrt(std::max(1e-12, pred.variance)) * cost_stats.std_dev;
+        results.push_back({unscaled_mean, unscaled_std});
+    }
+    return results;
 }
 #ifdef __EMSCRIPTEN__
 EMSCRIPTEN_BINDINGS(optima_module) {
@@ -246,8 +344,11 @@ EMSCRIPTEN_BINDINGS(optima_module) {
         .field("mean", &WasmPredictionResult::mean)
         .field("std_dev", &WasmPredictionResult::std_dev);
     emscripten::register_vector<double>("VectorDouble");
+    emscripten::register_vector<std::string>("VectorString");
     emscripten::register_vector<WasmParamConfig>("VectorParamConfig");
+    emscripten::register_vector<WasmPredictionResult>("VectorPredictionResult");
     emscripten::function("suggestNextTrial", &suggestNextTrial);
     emscripten::function("predictObjectiveAtPoint", &predictObjectiveAtPoint);
+    emscripten::function("predictObjectiveBatch", &predictObjectiveBatch);
 }
 #endif

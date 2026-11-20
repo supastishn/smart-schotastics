@@ -3,81 +3,170 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Experiments - OptimaBay</title>
+    <title>Experiments - SmartStochastics</title>
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
     <nav>
-        <span class="brand">OptimaBay</span>
+        <span class="brand"><span class="brand-smart">Smart</span><span class="brand-stochastics">Stochastics</span></span>
         <a href="dashboard.html">Dashboard</a>
-        <a href="index.html" class="active-tab">Experiments</a>
+        <a href="index.html" class="active-tab" id="navExperimentsLink">Experiments</a>
         <a href="settings.html">Settings</a>
-        <span class="engine-badge" id="engineStatusBadge">Engine: Initializing...</span>
     </nav>
     <main>
-        <h2 class="section-title">Experiments</h2>
-        <div class="experiments-list" id="experimentsList"></div>
-        <section class="add-experiment">
-            <h3>New Experiment</h3>
-            <form id="experimentForm" onsubmit="return false;">
-                <div class="form-row">
-                    <div class="form-group">
-                        <label for="expName">Experiment Name</label>
-                        <input type="text" id="expName" placeholder="e.g., hyperopt_v1" required>
-                    </div>
-                    <div class="form-group">
-                        <label for="objectiveName">Objective Name</label>
-                        <input type="text" id="objectiveName" placeholder="e.g., val_loss" required>
-                    </div>
-                    <div class="form-group">
-                        <label for="direction">Direction</label>
-                        <select id="direction" required>
-                            <option value="minimize">Minimize</option>
-                            <option value="maximize">Maximize</option>
-                        </select>
-                    </div>
-                </div>
-                <fieldset class="param-fieldset">
-                    <legend>Optimizer Configuration</legend>
-                    <div class="form-row">
-                        <div class="form-group">
-                            <label for="surrogateType">Surrogate Model</label>
-                            <select id="surrogateType">
-                                <option value="council">Council (GP + Polynomial)</option>
-                                <option value="gaussian_process">Gaussian Process (RBF)</option>
-                                <option value="polynomial">Piecewise Polynomial</option>
-                            </select>
-                        </div>
-                        <div class="form-group">
-                            <label for="acquisitionType">Acquisition Optimizer</label>
-                            <select id="acquisitionType">
-                                <option value="lbfgs">L-BFGS (Log-EI)</option>
-                                <option value="perihelion">Perihelion (Halley Log-EI)</option>
-                                <option value="random">Random Search (Log-EI)</option>
-                            </select>
-                        </div>
-                        <div class="form-group">
-                            <label for="warmupTrials">Warmup Trials</label>
-                            <input type="number" id="warmupTrials" min="1" max="50" value="5">
-                        </div>
-                        <div class="form-group">
-                            <label for="rbfLengthScale">RBF Length Scale</label>
-                            <input type="number" id="rbfLengthScale" min="0.01" max="5" step="0.05" value="0.3">
-                        </div>
-                    </div>
-                </fieldset>
-                <fieldset class="param-fieldset">
-                    <legend>Parameters</legend>
-                    <div id="paramsContainer"></div>
-                    <button type="button" class="btn add-param-btn" id="addParamButton">+ Add Parameter</button>
-                </fieldset>
-                <button type="submit" class="btn btn-primary" id="createExperimentButton">Create Experiment</button>
-            </form>
+        <section id="experimentsMenuView">
+            <div class="page-header-row">
+                <h2 class="section-title">Experiments</h2>
+                <button type="button" class="btn btn-primary" id="openNewExperimentMenuButton">+ New Experiment</button>
+            </div>
+            <div class="experiments-list" id="experimentsList"></div>
+        </section>
+        <section id="activeExperimentView" hidden>
+            <div class="active-experiment-panel" id="activeExperimentPanel"></div>
         </section>
     </main>
-    <footer>
-        Experiment Optimizer &mdash; Ask &amp; Tell Interface
-    </footer>
+    <div class="menu-overlay" id="newExperimentMenu" hidden>
+        <div class="menu-dialog" role="dialog" aria-modal="true" aria-labelledby="newExperimentMenuTitle">
+            <div class="menu-dialog-header">
+                <h3 id="newExperimentMenuTitle">New Experiment Input Data</h3>
+                <button type="button" class="btn close-x-btn" id="closeNewExperimentMenuButton" aria-label="Close">X</button>
+            </div>
+            <div class="menu-dialog-body">
+                <form id="experimentForm" onsubmit="return false;">
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="expName">Experiment Name</label>
+                            <input type="text" id="expName" placeholder="e.g., hyperopt_v1" required>
+                        </div>
+                        <div class="form-group">
+                            <label for="objectiveName">Objective Name</label>
+                            <input type="text" id="objectiveName" placeholder="e.g., val_loss" required>
+                        </div>
+                        <div class="form-group">
+                            <label for="direction">Direction</label>
+                            <select id="direction" required>
+                                <option value="minimize">Minimize</option>
+                                <option value="maximize">Maximize</option>
+                            </select>
+                        </div>
+                    </div>
+                    <fieldset class="param-fieldset">
+                        <legend>Optimizer Configuration</legend>
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label for="acquisitionType">Acquisition Optimizer</label>
+                                <select id="acquisitionType">
+                                    <option value="lbfgs">L-BFGS (Log-EI)</option>
+                                    <option value="perihelion">Perihelion (Halley Log-EI)</option>
+                                    <option value="random">Random Search (Log-EI)</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label for="warmupTrials">Warmup Trials</label>
+                                <input type="number" id="warmupTrials" min="1" max="50" value="5">
+                            </div>
+                            <div class="form-group">
+                                <label for="rbfLengthScale">Kernel Length Scale</label>
+                                <input type="number" id="rbfLengthScale" min="0.01" max="5" step="0.05" value="0.3">
+                            </div>
+                            <div class="form-group">
+                                <label for="polyPoints">Poly Points</label>
+                                <input type="number" id="polyPoints" min="4" max="100" value="15">
+                            </div>
+                        </div>
+                        <div class="form-group">
+                            <label>Surrogates in Council (select one or more)</label>
+                            <div id="newSurrogatesContainer" class="surrogate-checkbox-grid"></div>
+                        </div>
+                    </fieldset>
+                    <fieldset class="param-fieldset">
+                        <legend>Parameters</legend>
+                        <div id="paramsContainer"></div>
+                        <button type="button" class="btn add-param-btn" id="addParamButton">+ Add Parameter</button>
+                    </fieldset>
+                    <div class="menu-dialog-actions">
+                        <button type="button" class="btn" id="cancelNewExperimentButton">Cancel</button>
+                        <button type="submit" class="btn btn-primary" id="createExperimentButton">Create Experiment</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+    <div class="menu-overlay" id="editExperimentMenu" hidden>
+        <div class="menu-dialog" role="dialog" aria-modal="true" aria-labelledby="editExperimentMenuTitle">
+            <div class="menu-dialog-header">
+                <h3 id="editExperimentMenuTitle">Input Data &amp; Setup</h3>
+                <button type="button" class="btn close-x-btn" id="closeEditExperimentMenuButton" aria-label="Close">X</button>
+            </div>
+            <div class="menu-dialog-body">
+                <form id="editExperimentForm" onsubmit="return false;">
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="editExpName">Experiment Name</label>
+                            <input type="text" id="editExpName" required>
+                        </div>
+                        <div class="form-group">
+                            <label for="editObjectiveName">Objective Name</label>
+                            <input type="text" id="editObjectiveName" required>
+                        </div>
+                        <div class="form-group">
+                            <label for="editDirection">Direction</label>
+                            <select id="editDirection" required>
+                                <option value="minimize">Minimize</option>
+                                <option value="maximize">Maximize</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label for="editStatus">Status</label>
+                            <select id="editStatus">
+                                <option value="idle">Idle</option>
+                                <option value="running">Running</option>
+                                <option value="completed">Completed</option>
+                            </select>
+                        </div>
+                    </div>
+                    <fieldset class="param-fieldset">
+                        <legend>Optimizer Configuration</legend>
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label for="editAcquisitionType">Acquisition Optimizer</label>
+                                <select id="editAcquisitionType">
+                                    <option value="lbfgs">L-BFGS (Log-EI)</option>
+                                    <option value="perihelion">Perihelion (Halley Log-EI)</option>
+                                    <option value="random">Random Search (Log-EI)</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label for="editWarmupTrials">Warmup Trials</label>
+                                <input type="number" id="editWarmupTrials" min="1" max="50" value="5">
+                            </div>
+                            <div class="form-group">
+                                <label for="editRbfLengthScale">Kernel Length Scale</label>
+                                <input type="number" id="editRbfLengthScale" min="0.01" max="5" step="0.05" value="0.3">
+                            </div>
+                            <div class="form-group">
+                                <label for="editPolyPoints">Poly Points</label>
+                                <input type="number" id="editPolyPoints" min="4" max="100" value="15">
+                            </div>
+                        </div>
+                        <div class="form-group">
+                            <label>Surrogates in Council (select one or more)</label>
+                            <div id="editSurrogatesContainer" class="surrogate-checkbox-grid"></div>
+                        </div>
+                    </fieldset>
+                    <fieldset class="param-fieldset">
+                        <legend>Parameters</legend>
+                        <div id="editParamsContainer"></div>
+                        <button type="button" class="btn add-param-btn" id="addEditParamButton">+ Add Parameter</button>
+                    </fieldset>
+                    <div class="menu-dialog-actions">
+                        <button type="button" class="btn" id="cancelEditExperimentButton">Cancel</button>
+                        <button type="submit" class="btn btn-primary" id="saveExperimentInputsButton">Save Changes</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
     <script src="engine.js"></script>
     <script src="script.js"></script>
 </body>
