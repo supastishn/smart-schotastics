@@ -76,11 +76,15 @@
         } else {
             surrogates = settings.defaultSurrogates.slice();
         }
+        const dir = (exp.direction === 'maximize' || exp.direction === 'target') ? exp.direction : 'minimize';
         return {
             id: exp.id || generateExperimentId(),
             name: exp.name || 'untitled',
             objective: exp.objective || 'objective',
-            direction: exp.direction === 'maximize' ? 'maximize' : 'minimize',
+            direction: dir,
+            targetValue: (exp.targetValue !== undefined && exp.targetValue !== null && !Number.isNaN(Number(exp.targetValue)))
+                ? Number(exp.targetValue)
+                : 0,
             status: exp.status || 'idle',
             config: {
                 surrogates: surrogates,
@@ -148,16 +152,27 @@
         const s = String(status || 'idle');
         return s.charAt(0).toUpperCase() + s.slice(1);
     }
+    function formatDirectionLabel(exp) {
+        if (exp.direction === 'target') {
+            return 'target ' + (Number(exp.targetValue) || 0);
+        }
+        return exp.direction;
+    }
     function findBestTrial(exp) {
         if (!exp.trials || exp.trials.length === 0) {
             return null;
         }
+        const isTarget = exp.direction === 'target';
+        const target = Number(exp.targetValue) || 0;
         const maximize = exp.direction === 'maximize';
         let bestIdx = 0;
         for (let i = 1; i < exp.trials.length; i++) {
             const val = Number(exp.trials[i].objective);
             const bestVal = Number(exp.trials[bestIdx].objective);
-            if (maximize ? (val > bestVal) : (val < bestVal)) {
+            const better = isTarget
+                ? (Math.abs(val - target) < Math.abs(bestVal - target))
+                : (maximize ? (val > bestVal) : (val < bestVal));
+            if (better) {
                 bestIdx = i;
             }
         }
@@ -275,6 +290,7 @@
         const nameInput = document.getElementById('expName');
         const objectiveInput = document.getElementById('objectiveName');
         const directionSelect = document.getElementById('direction');
+        const targetValueInput = document.getElementById('targetValue');
         const acquisitionSelect = document.getElementById('acquisitionType');
         const warmupInput = document.getElementById('warmupTrials');
         const lengthScaleInput = document.getElementById('rbfLengthScale');
@@ -305,6 +321,7 @@
             name: nameInput.value.trim(),
             objective: objectiveInput.value.trim(),
             direction: directionSelect.value,
+            targetValue: parseFloat(targetValueInput.value) || 0,
             status: 'idle',
             config: {
                 surrogates: selectedSurrogates,
@@ -317,6 +334,13 @@
             trials: []
         });
     }
+    function syncTargetGroupVisibility(selectId, groupId) {
+        const sel = document.getElementById(selectId);
+        const grp = document.getElementById(groupId);
+        if (sel && grp) {
+            grp.hidden = sel.value !== 'target';
+        }
+    }
     function applyDefaultsToForm() {
         const settings = loadSettingsFromStorage();
         const directionSelect = document.getElementById('direction');
@@ -326,6 +350,7 @@
         const polyPointsInput = document.getElementById('polyPoints');
         const surrogatesContainer = document.getElementById('newSurrogatesContainer');
         if (directionSelect) directionSelect.value = settings.defaultDirection;
+        syncTargetGroupVisibility('direction', 'targetValueGroup');
         if (acquisitionSelect) acquisitionSelect.value = settings.defaultAcquisition;
         if (warmupInput) warmupInput.value = settings.defaultWarmupTrials;
         if (lengthScaleInput) lengthScaleInput.value = settings.defaultLengthScale;
@@ -470,6 +495,8 @@
         document.getElementById('editExpName').value = exp.name;
         document.getElementById('editObjectiveName').value = exp.objective;
         document.getElementById('editDirection').value = exp.direction;
+        document.getElementById('editTargetValue').value = String(exp.targetValue);
+        syncTargetGroupVisibility('editDirection', 'editTargetValueGroup');
         document.getElementById('editStatus').value = exp.status;
         document.getElementById('editAcquisitionType').value = exp.config.acquisition;
         document.getElementById('editWarmupTrials').value = exp.config.warmupTrials;
@@ -500,6 +527,7 @@
         const nameVal = document.getElementById('editExpName').value.trim();
         const objVal = document.getElementById('editObjectiveName').value.trim();
         const dirVal = document.getElementById('editDirection').value;
+        const targetVal = parseFloat(document.getElementById('editTargetValue').value) || 0;
         const statusVal = document.getElementById('editStatus').value;
         const selectedSurrogates = readSurrogateCheckboxes(document.getElementById('editSurrogatesContainer'));
         const acqVal = document.getElementById('editAcquisitionType').value;
@@ -531,7 +559,8 @@
         updateExperimentById(activeExperimentId, function(cur) {
             cur.name = nameVal;
             cur.objective = objVal;
-            cur.direction = dirVal === 'maximize' ? 'maximize' : 'minimize';
+            cur.direction = (dirVal === 'maximize' || dirVal === 'target') ? dirVal : 'minimize';
+            cur.targetValue = targetVal;
             cur.status = statusVal;
             cur.config = {
                 surrogates: selectedSurrogates,
@@ -587,17 +616,22 @@
         const plotW = width - padLeft - padRight;
         const plotH = height - padTop - padBottom;
         const objectives = exp.trials.map(function(t) { return Number(t.objective); });
+        const isTarget = exp.direction === 'target';
+        const targetVal = Number(exp.targetValue) || 0;
         const maximize = exp.direction === 'maximize';
         const bestCurve = [];
         let runningBest = objectives[0];
         for (let i = 0; i < objectives.length; i++) {
-            if (maximize ? (objectives[i] > runningBest) : (objectives[i] < runningBest)) {
+            const better = isTarget
+                ? (Math.abs(objectives[i] - targetVal) < Math.abs(runningBest - targetVal))
+                : (maximize ? (objectives[i] > runningBest) : (objectives[i] < runningBest));
+            if (better) {
                 runningBest = objectives[i];
             }
             bestCurve.push(runningBest);
         }
-        let minY = Math.min.apply(null, objectives);
-        let maxY = Math.max.apply(null, objectives);
+        let minY = isTarget ? Math.min(Math.min.apply(null, objectives), targetVal) : Math.min.apply(null, objectives);
+        let maxY = isTarget ? Math.max(Math.max.apply(null, objectives), targetVal) : Math.max.apply(null, objectives);
         if (Math.abs(maxY - minY) < 1e-12) {
             minY -= 1.0;
             maxY += 1.0;
@@ -640,6 +674,18 @@
             else ctx.lineTo(x, y);
         }
         ctx.stroke();
+        if (isTarget) {
+            const ty = yForValue(targetVal);
+            ctx.save();
+            ctx.setLineDash([5, 4]);
+            ctx.strokeStyle = '#2e8b57';
+            ctx.lineWidth = 1.5;
+            ctx.beginPath();
+            ctx.moveTo(padLeft, ty);
+            ctx.lineTo(padLeft + plotW, ty);
+            ctx.stroke();
+            ctx.restore();
+        }
         ctx.strokeStyle = '#316ac5';
         ctx.lineWidth = 2.5;
         ctx.beginPath();
@@ -719,6 +765,9 @@
         (exp.trials || []).forEach(function(t) {
             allY.push(Number(t.objective));
         });
+        if (exp.direction === 'target') {
+            allY.push(Number(exp.targetValue) || 0);
+        }
         let minY = Math.min.apply(null, allY);
         let maxY = Math.max.apply(null, allY);
         if (Math.abs(maxY - minY) < 1e-12) {
@@ -786,6 +835,18 @@
             }
             ctx.closePath();
             ctx.fill();
+        }
+        if (exp.direction === 'target') {
+            const targetY = py(Number(exp.targetValue) || 0);
+            ctx.save();
+            ctx.setLineDash([6, 4]);
+            ctx.strokeStyle = '#2e8b57';
+            ctx.lineWidth = 1.6;
+            ctx.beginPath();
+            ctx.moveTo(padLeft, targetY);
+            ctx.lineTo(padLeft + plotW, targetY);
+            ctx.stroke();
+            ctx.restore();
         }
         ctx.strokeStyle = '#316ac5';
         ctx.lineWidth = 2.2;
@@ -1151,7 +1212,7 @@
             const metaLine = document.createElement('div');
             metaLine.className = 'summary-meta';
             metaLine.textContent =
-                'Objective: ' + exp.objective + ' (' + exp.direction + ') · ' +
+                'Objective: ' + exp.objective + ' (' + formatDirectionLabel(exp) + ') · ' +
                 formatSurrogateLabel(exp.config) + ' / ' +
                 formatAcquisitionLabel(exp.config.acquisition) + ' · ' +
                 exp.trials.length + ' trials' +
@@ -1433,7 +1494,7 @@
         statusBadge.textContent = formatStatusLabel(exp.status);
         const objSummary = document.createElement('span');
         objSummary.className = 'summary-meta';
-        objSummary.textContent = exp.objective + ' (' + exp.direction + ')';
+        objSummary.textContent = exp.objective + ' (' + formatDirectionLabel(exp) + ')';
         headerLeft.appendChild(titleEl);
         headerLeft.appendChild(statusBadge);
         headerLeft.appendChild(objSummary);
@@ -1568,7 +1629,54 @@
             renderActiveExperiment();
         });
         ppWrap.appendChild(ppInput);
+        const dirSelect = document.createElement('select');
+        dirSelect.className = 'compact-select';
+        [
+            { value: 'minimize', label: 'Mode: Minimize' },
+            { value: 'maximize', label: 'Mode: Maximize' },
+            { value: 'target', label: 'Mode: Target' }
+        ].forEach(function(item) {
+            const opt = document.createElement('option');
+            opt.value = item.value;
+            opt.textContent = item.label;
+            if (exp.direction === item.value) opt.selected = true;
+            dirSelect.appendChild(opt);
+        });
+        dirSelect.addEventListener('change', function() {
+            updateExperimentById(exp.id, function(cur) {
+                cur.direction = dirSelect.value;
+                cur.pendingSuggestion = null;
+                return cur;
+            });
+            renderActiveExperiment();
+        });
         controlsRow.appendChild(statusSelect);
+        controlsRow.appendChild(dirSelect);
+        if (exp.direction === 'target') {
+            const targetWrap = document.createElement('label');
+            targetWrap.className = 'compact-inline-label';
+            targetWrap.textContent = 'Target: ';
+            const targetInput = document.createElement('input');
+            targetInput.type = 'number';
+            targetInput.step = 'any';
+            targetInput.className = 'compact-input';
+            targetInput.value = String(exp.targetValue);
+            targetInput.addEventListener('change', function() {
+                const parsedTarget = parseFloat(targetInput.value);
+                if (Number.isNaN(parsedTarget)) {
+                    targetInput.value = String(exp.targetValue);
+                    return;
+                }
+                updateExperimentById(exp.id, function(cur) {
+                    cur.targetValue = parsedTarget;
+                    cur.pendingSuggestion = null;
+                    return cur;
+                });
+                renderActiveExperiment();
+            });
+            targetWrap.appendChild(targetInput);
+            controlsRow.appendChild(targetWrap);
+        }
         controlsRow.appendChild(acqSelect);
         controlsRow.appendChild(lsWrap);
         controlsRow.appendChild(ppWrap);
@@ -2065,6 +2173,18 @@
         if (addEditParamBtn) {
             addEditParamBtn.addEventListener('click', function() {
                 addParameterRowToContainer(editParamsContainer, false, null);
+            });
+        }
+        const directionEl = document.getElementById('direction');
+        if (directionEl) {
+            directionEl.addEventListener('change', function() {
+                syncTargetGroupVisibility('direction', 'targetValueGroup');
+            });
+        }
+        const editDirectionEl = document.getElementById('editDirection');
+        if (editDirectionEl) {
+            editDirectionEl.addEventListener('change', function() {
+                syncTargetGroupVisibility('editDirection', 'editTargetValueGroup');
             });
         }
         document.addEventListener('keydown', function(e) {

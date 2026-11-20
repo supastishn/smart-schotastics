@@ -47,7 +47,12 @@
                             <select id="direction" required>
                                 <option value="minimize">Minimize</option>
                                 <option value="maximize">Maximize</option>
+                                <option value="target">Target</option>
                             </select>
+                        </div>
+                        <div class="form-group" id="targetValueGroup" hidden>
+                            <label for="targetValue">Target Value</label>
+                            <input type="number" id="targetValue" step="any" value="0">
                         </div>
                     </div>
                     <fieldset class="param-fieldset">
@@ -114,7 +119,12 @@
                             <select id="editDirection" required>
                                 <option value="minimize">Minimize</option>
                                 <option value="maximize">Maximize</option>
+                                <option value="target">Target</option>
                             </select>
+                        </div>
+                        <div class="form-group" id="editTargetValueGroup" hidden>
+                            <label for="editTargetValue">Target Value</label>
+                            <input type="number" id="editTargetValue" step="any" value="0">
                         </div>
                         <div class="form-group">
                             <label for="editStatus">Status</label>

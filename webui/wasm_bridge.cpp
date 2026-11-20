@@ -159,7 +159,8 @@ inline WasmSuggestionResult suggestNextTrial(
     const std::vector<WasmParamConfig>& params,
     const std::vector<double>& flat_trial_params,
     const std::vector<double>& trial_objectives,
-    bool maximize,
+    const std::string& direction,
+    double target_value,
     const std::vector<std::string>& surrogate_ids,
     const std::string& acquisition_type,
     double rbf_length_scale,
@@ -189,6 +190,8 @@ inline WasmSuggestionResult suggestNextTrial(
         result.used_warmup = true;
         return result;
     }
+    const bool maximize = (direction == "maximize");
+    const bool is_target = (direction == "target");
     std::vector<double> oriented_costs(num_trials, 0.0);
     std::vector<double> used_samples(
         flat_trial_params.begin(),
@@ -198,24 +201,44 @@ inline WasmSuggestionResult suggestNextTrial(
         oriented_costs[i] = maximize ? -trial_objectives[i] : trial_objectives[i];
     }
     SurrogateBundle bundle = createSurrogateBundle(surrogate_ids, rbf_length_scale, poly_degree, poly_points);
-    AcquisitionFunction acq = selectAcquisitionFunction(acquisition_type);
-    SmartBayesian optimizer(dummyBridgeCostFunction, bundle.active, acq, bounds);
-    optimizer.set_training_data(used_samples, oriented_costs);
     std::vector<double> unit_samples;
     unit_samples.reserve(num_trials * dim);
     std::vector<double> raw_point(dim, 0.0);
+    size_t best_idx = 0;
+    double best_score = std::numeric_limits<double>::infinity();
     for (size_t i = 0; i < num_trials; ++i) {
         for (size_t d = 0; d < dim; ++d) {
             raw_point[d] = used_samples[i * dim + d];
         }
         const std::vector<double> unit_pt = normalizeInput(raw_point, bounds);
         unit_samples.insert(unit_samples.end(), unit_pt.begin(), unit_pt.end());
+        const double score = is_target ? std::fabs(oriented_costs[i] - target_value) : oriented_costs[i];
+        if (score < best_score) {
+            best_score = score;
+            best_idx = i;
+        }
     }
     const ZScoreStats cost_stats = computeZScoreStats(oriented_costs);
     const std::vector<double> z_costs = normalizeCostsZScore(oriented_costs, cost_stats);
-    const std::vector<double> unit_best = normalizeInput(optimizer.get_current_solution(), bounds);
+    const std::vector<double> unit_best(
+        unit_samples.begin() + static_cast<std::ptrdiff_t>(best_idx * dim),
+        unit_samples.begin() + static_cast<std::ptrdiff_t>((best_idx + 1) * dim)
+    );
     bundle.active->train(unit_samples, z_costs, static_cast<int>(num_trials));
-    std::vector<double> unit_next = acq(*bundle.active, unit_best, unit_samples, z_costs);
+    std::vector<double> unit_next;
+    if (is_target) {
+        const double target_z = normalizeSingleCostZScore(target_value, cost_stats);
+        if (acquisition_type == "perihelion") {
+            unit_next = targetExpectedImprovementPerihelionDefault(*bundle.active, unit_best, unit_samples, z_costs, target_z);
+        } else if (acquisition_type == "random") {
+            unit_next = targetExpectedImprovement(*bundle.active, unit_best, unit_samples, z_costs, target_z);
+        } else {
+            unit_next = targetExpectedImprovementLBFGS(*bundle.active, unit_best, unit_samples, z_costs, target_z);
+        }
+    } else {
+        AcquisitionFunction acq = selectAcquisitionFunction(acquisition_type);
+        unit_next = acq(*bundle.active, unit_best, unit_samples, z_costs);
+    }
     clampUnitPoint(unit_next);
     result.values = denormalizeInput(unit_next, bounds);
     snapValuesToParamTypes(result.values, params);

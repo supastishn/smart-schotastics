@@ -64,6 +64,20 @@ inline double minNormalizedDistanceToSamples(
     }
     return std::sqrt(minSqDist / static_cast<double>(dimension));
 }
+inline double applyDuplicatePenalty(
+    double logEI,
+    const std::vector<double>& candidate,
+    const std::vector<double>& points,
+    size_t dimension,
+    double duplicateRadius = 0.025
+) {
+    const double rmsDist = minNormalizedDistanceToSamples(candidate, points, dimension);
+    if (rmsDist < duplicateRadius) {
+        const double proximity = 1.0 - (rmsDist / duplicateRadius);
+        logEI -= 250.0 * proximity * proximity;
+    }
+    return logEI;
+}
 inline double computePenalizedLogExpectedImprovement(
     const SurrogateModel& surrogate,
     const std::vector<double>& candidate,
@@ -72,28 +86,80 @@ inline double computePenalizedLogExpectedImprovement(
     size_t dimension,
     double duplicateRadius = 0.025
 ) {
-    double logEI = computeLogExpectedImprovement(surrogate.predict(candidate), bestCost);
-    const double rmsDist = minNormalizedDistanceToSamples(candidate, points, dimension);
-    if (rmsDist < duplicateRadius) {
-        const double proximity = 1.0 - (rmsDist / duplicateRadius);
-        logEI -= 250.0 * proximity * proximity;
-    }
-    return logEI;
+    const double logEI = computeLogExpectedImprovement(surrogate.predict(candidate), bestCost);
+    return applyDuplicatePenalty(logEI, candidate, points, dimension, duplicateRadius);
 }
-inline std::vector<double> expectedImprovement(
+inline double normalCDFNeg(double x) {
+    return 0.5 * std::erfc(-x / std::sqrt(2.0));
+}
+inline double normalCDFDiff(double a, double b) {
+    if (b <= a) {
+        return 0.0;
+    }
+    if (a >= 0.0) {
+        return normalCDFNeg(-a) - normalCDFNeg(-b);
+    }
+    if (b <= 0.0) {
+        return normalCDFNeg(b) - normalCDFNeg(a);
+    }
+    return normalCDF(b) - normalCDF(a);
+}
+inline double computeLogTargetExpectedImprovement(
+    const GaussianPrediction& prediction,
+    double target,
+    double bestDistance
+) {
+    const double stdDev = std::sqrt(std::max(prediction.variance, 1e-12));
+    const double d = std::max(1e-9, bestDistance);
+    const double mu = prediction.mean;
+    const double zL = (target - d - mu) / stdDev;
+    const double z0 = (target - mu) / stdDev;
+    const double zU = (target + d - mu) / stdDev;
+    const double ei =
+        (mu - target + d) * normalCDFDiff(zL, z0) +
+        (target + d - mu) * normalCDFDiff(z0, zU) +
+        stdDev * (normalPDF(zL) + normalPDF(zU) - 2.0 * normalPDF(z0));
+    if (ei > 1e-300) {
+        return std::log(ei);
+    }
+    const double zEdge = (mu > target) ? zU : -zL;
+    const double t = std::max(1.0, -zEdge);
+    return -0.5 * std::log(2.0 * kPi) - 0.5 * t * t + std::log(stdDev) - 2.0 * std::log(t);
+}
+inline double computePenalizedLogTargetExpectedImprovement(
     const SurrogateModel& surrogate,
-    const std::vector<double>& currentBest,
+    const std::vector<double>& candidate,
+    double target,
+    double bestDistance,
     const std::vector<double>& points,
-    const std::vector<double>& costs
+    size_t dimension,
+    double duplicateRadius = 0.025
+) {
+    const double logEI = computeLogTargetExpectedImprovement(surrogate.predict(candidate), target, bestDistance);
+    return applyDuplicatePenalty(logEI, candidate, points, dimension, duplicateRadius);
+}
+inline double computeBestTargetDistance(const std::vector<double>& costs, double target) {
+    if (costs.empty()) {
+        return 0.0;
+    }
+    double bestDist = std::numeric_limits<double>::infinity();
+    for (double c : costs) {
+        bestDist = std::min(bestDist, std::fabs(c - target));
+    }
+    return bestDist;
+}
+template <typename ScoreFn>
+inline std::vector<double> randomSearchMaximizeScore(
+    const std::vector<double>& currentBest,
+    ScoreFn&& scoreFn
 ) {
     const size_t dimension = std::max<size_t>(1, currentBest.size());
-    const double bestCost = costs.empty() ? 0.0 : *std::min_element(costs.begin(), costs.end());
     std::vector<double> bestPoint(dimension, 0.5);
     double bestLogEI = -std::numeric_limits<double>::infinity();
     if (!currentBest.empty()) {
         std::vector<double> clampedBest = currentBest;
         clampUnitPoint(clampedBest);
-        const double logEI = computePenalizedLogExpectedImprovement(surrogate, clampedBest, bestCost, points, dimension);
+        const double logEI = scoreFn(clampedBest);
         if (logEI > bestLogEI) {
             bestLogEI = logEI;
             bestPoint = clampedBest;
@@ -104,7 +170,7 @@ inline std::vector<double> expectedImprovement(
         for (size_t d = 0; d < dimension; ++d) {
             randomPoint[d] = static_cast<double>(std::rand()) / static_cast<double>(RAND_MAX);
         }
-        const double logEI = computePenalizedLogExpectedImprovement(surrogate, randomPoint, bestCost, points, dimension);
+        const double logEI = scoreFn(randomPoint);
         if (logEI > bestLogEI) {
             bestLogEI = logEI;
             bestPoint = randomPoint;
@@ -112,15 +178,15 @@ inline std::vector<double> expectedImprovement(
     }
     return bestPoint;
 }
-inline std::vector<double> expectedImprovementPerihelion(
-    const SurrogateModel& surrogate,
+template <typename ScoreFn>
+inline std::vector<double> perihelionMaximizeScore(
     const std::vector<double>& currentBest,
     const std::vector<double>& points,
-    const std::vector<double>& costs,
-    PerihelionMethod method = PerihelionMethod::HALLEY
+    const std::vector<double>& realCostsForSeed,
+    PerihelionMethod method,
+    ScoreFn&& scoreFn
 ) {
     const size_t dimension = std::max<size_t>(1, currentBest.size());
-    const double bestCost = costs.empty() ? 0.0 : *std::min_element(costs.begin(), costs.end());
     constexpr int numRandomPoints = 50;
     std::vector<std::vector<double>> candidatePoints(numRandomPoints, std::vector<double>(dimension, 0.5));
     std::vector<double> candidateNegLogEI(numRandomPoints, 0.0);
@@ -130,14 +196,14 @@ inline std::vector<double> expectedImprovementPerihelion(
         for (size_t d = 0; d < dimension; ++d) {
             candidatePoints[i][d] = static_cast<double>(std::rand()) / static_cast<double>(RAND_MAX);
         }
-        const double logEI = computePenalizedLogExpectedImprovement(surrogate, candidatePoints[i], bestCost, points, dimension);
+        const double logEI = scoreFn(candidatePoints[i]);
         candidateNegLogEI[i] = -logEI;
         if (logEI > bestLogEI) {
             bestLogEI = logEI;
             bestPoint = candidatePoints[i];
         }
     }
-    const size_t numRealPoints = std::min(costs.size(), points.size() / dimension);
+    const size_t numRealPoints = std::min(realCostsForSeed.size(), points.size() / dimension);
     if (numRealPoints >= 2 && !currentBest.empty()) {
         std::vector<std::vector<double>> realPointHistory(numRealPoints, std::vector<double>(dimension, 0.0));
         for (size_t j = 0; j < numRealPoints; ++j) {
@@ -145,10 +211,10 @@ inline std::vector<double> expectedImprovementPerihelion(
                 realPointHistory[j][d] = points[j * dimension + d];
             }
         }
-        std::vector<double> realCosts(costs.begin(), costs.begin() + static_cast<std::ptrdiff_t>(numRealPoints));
+        std::vector<double> realCosts(realCostsForSeed.begin(), realCostsForSeed.begin() + static_cast<std::ptrdiff_t>(numRealPoints));
         std::vector<double> perihelionPoint = perihelion_diagonal_all(currentBest, realPointHistory, realCosts, method);
         clampUnitPoint(perihelionPoint);
-        const double logEI = computePenalizedLogExpectedImprovement(surrogate, perihelionPoint, bestCost, points, dimension);
+        const double logEI = scoreFn(perihelionPoint);
         candidatePoints.push_back(perihelionPoint);
         candidateNegLogEI.push_back(-logEI);
         if (logEI > bestLogEI) {
@@ -171,7 +237,7 @@ inline std::vector<double> expectedImprovementPerihelion(
         for (int j = 0; j < perihelion_iters; ++j) {
             std::vector<double> newPoint = perihelion_diagonal_all(current, trajPoints, trajNegLogEI, method);
             clampUnitPoint(newPoint);
-            const double logEI = computePenalizedLogExpectedImprovement(surrogate, newPoint, bestCost, points, dimension);
+            const double logEI = scoreFn(newPoint);
             if (logEI > bestLogEI) {
                 bestLogEI = logEI;
                 bestPoint = newPoint;
@@ -186,24 +252,14 @@ inline std::vector<double> expectedImprovementPerihelion(
     }
     return bestPoint;
 }
-inline std::vector<double> expectedImprovementPerihelionDefault(
-    const SurrogateModel& surrogate,
+template <typename ScoreFn>
+inline std::vector<double> lbfgsMaximizeScore(
     const std::vector<double>& currentBest,
-    const std::vector<double>& points,
-    const std::vector<double>& costs
-) {
-    return expectedImprovementPerihelion(surrogate, currentBest, points, costs, PerihelionMethod::HALLEY);
-}
-inline std::vector<double> expectedImprovementLBFGS(
-    const SurrogateModel& surrogate,
-    const std::vector<double>& currentBest,
-    const std::vector<double>& points,
-    const std::vector<double>& costs
+    ScoreFn&& scoreFn
 ) {
     const size_t dimension = std::max<size_t>(1, currentBest.size());
-    const double bestCost = costs.empty() ? 0.0 : *std::min_element(costs.begin(), costs.end());
     auto negLogEI = [&](const std::vector<double>& x) -> double {
-        return -computePenalizedLogExpectedImprovement(surrogate, x, bestCost, points, dimension);
+        return -scoreFn(x);
     };
     constexpr int numSeedSamples = 64;
     constexpr int numRestarts = 8;
@@ -240,5 +296,93 @@ inline std::vector<double> expectedImprovementLBFGS(
         }
     }
     return bestPoint;
+}
+inline std::vector<double> expectedImprovement(
+    const SurrogateModel& surrogate,
+    const std::vector<double>& currentBest,
+    const std::vector<double>& points,
+    const std::vector<double>& costs
+) {
+    const size_t dimension = std::max<size_t>(1, currentBest.size());
+    const double bestCost = costs.empty() ? 0.0 : *std::min_element(costs.begin(), costs.end());
+    return randomSearchMaximizeScore(currentBest, [&](const std::vector<double>& x) {
+        return computePenalizedLogExpectedImprovement(surrogate, x, bestCost, points, dimension);
+    });
+}
+inline std::vector<double> expectedImprovementPerihelion(
+    const SurrogateModel& surrogate,
+    const std::vector<double>& currentBest,
+    const std::vector<double>& points,
+    const std::vector<double>& costs,
+    PerihelionMethod method = PerihelionMethod::HALLEY
+) {
+    const size_t dimension = std::max<size_t>(1, currentBest.size());
+    const double bestCost = costs.empty() ? 0.0 : *std::min_element(costs.begin(), costs.end());
+    return perihelionMaximizeScore(currentBest, points, costs, method, [&](const std::vector<double>& x) {
+        return computePenalizedLogExpectedImprovement(surrogate, x, bestCost, points, dimension);
+    });
+}
+inline std::vector<double> expectedImprovementPerihelionDefault(
+    const SurrogateModel& surrogate,
+    const std::vector<double>& currentBest,
+    const std::vector<double>& points,
+    const std::vector<double>& costs
+) {
+    return expectedImprovementPerihelion(surrogate, currentBest, points, costs, PerihelionMethod::HALLEY);
+}
+inline std::vector<double> expectedImprovementLBFGS(
+    const SurrogateModel& surrogate,
+    const std::vector<double>& currentBest,
+    const std::vector<double>& points,
+    const std::vector<double>& costs
+) {
+    const size_t dimension = std::max<size_t>(1, currentBest.size());
+    const double bestCost = costs.empty() ? 0.0 : *std::min_element(costs.begin(), costs.end());
+    return lbfgsMaximizeScore(currentBest, [&](const std::vector<double>& x) {
+        return computePenalizedLogExpectedImprovement(surrogate, x, bestCost, points, dimension);
+    });
+}
+inline std::vector<double> targetExpectedImprovement(
+    const SurrogateModel& surrogate,
+    const std::vector<double>& currentBest,
+    const std::vector<double>& points,
+    const std::vector<double>& costs,
+    double target
+) {
+    const size_t dimension = std::max<size_t>(1, currentBest.size());
+    const double bestDist = computeBestTargetDistance(costs, target);
+    return randomSearchMaximizeScore(currentBest, [&](const std::vector<double>& x) {
+        return computePenalizedLogTargetExpectedImprovement(surrogate, x, target, bestDist, points, dimension);
+    });
+}
+inline std::vector<double> targetExpectedImprovementPerihelionDefault(
+    const SurrogateModel& surrogate,
+    const std::vector<double>& currentBest,
+    const std::vector<double>& points,
+    const std::vector<double>& costs,
+    double target
+) {
+    const size_t dimension = std::max<size_t>(1, currentBest.size());
+    const double bestDist = computeBestTargetDistance(costs, target);
+    std::vector<double> absErrors(costs.size(), 0.0);
+    for (size_t i = 0; i < costs.size(); ++i) {
+        absErrors[i] = std::fabs(costs[i] - target);
+    }
+    return perihelionMaximizeScore(currentBest, points, absErrors, PerihelionMethod::HALLEY, [&](const std::vector<double>& x) {
+        return computePenalizedLogTargetExpectedImprovement(surrogate, x, target, bestDist, points, dimension);
+    });
+}
+inline std::vector<double> targetExpectedImprovementLBFGS(
+    const SurrogateModel& surrogate,
+    const std::vector<double>& currentBest,
+    const std::vector<double>& points,
+    const std::vector<double>& costs,
+    double target
+) {
+    const size_t dimension = std::max<size_t>(1, currentBest.size());
+    const double bestDist = computeBestTargetDistance(costs, target);
+    return lbfgsMaximizeScore(currentBest, [&](const std::vector<double>& x) {
+        return computePenalizedLogTargetExpectedImprovement(surrogate, x, target, bestDist, points, dimension);
+    });
 }
 #endif

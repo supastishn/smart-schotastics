@@ -43,11 +43,16 @@
                 if (!Array.isArray(exp.trials) || exp.trials.length === 0) {
                     return '—';
                 }
+                const target = Number(exp.targetValue) || 0;
+                const isTarget = exp.direction === 'target';
                 const maximize = exp.direction === 'maximize';
                 let best = Number(exp.trials[0].objective);
                 for (let i = 1; i < exp.trials.length; i++) {
                     const val = Number(exp.trials[i].objective);
-                    if (maximize ? (val > best) : (val < best)) {
+                    const better = isTarget
+                        ? (Math.abs(val - target) < Math.abs(best - target))
+                        : (maximize ? (val > best) : (val < best));
+                    if (better) {
                         best = val;
                     }
                 }
@@ -107,7 +112,7 @@
                         '<td>' + escapeHtml(statusLabel) + '</td>' +
                         '<td>' + escapeHtml(formatOptimizerSummary(cfg)) + '</td>' +
                         '<td>' + trialsCount + '</td>' +
-                        '<td>' + escapeHtml(exp.objective + ' (' + exp.direction + ')') + '</td>' +
+                        '<td>' + escapeHtml(exp.objective + ' (' + (exp.direction === 'target' ? ('target ' + (Number(exp.targetValue) || 0)) : exp.direction) + ')') + '</td>' +
                         '<td><strong>' + escapeHtml(getBestObjective(exp)) + '</strong></td>' +
                         '</tr>';
                 }).join('');
