@@ -16,47 +16,86 @@
     <main>
         <h2 class="section-title">Dashboard</h2>
         <div class="stats-grid" id="dashboardStats"></div>
+        <section class="dashboard-overview" id="dashboardOverview"></section>
     </main>
     <footer>
-        Experiment Optimizer &mdash; Internal Tool
+        Experiment Optimizer &mdash; Ask &amp; Tell Interface
     </footer>
     <script>
         (function() {
             const STORAGE_KEY_EXPERIMENTS = 'experiments';
+            function escapeHtml(value) {
+                return String(value)
+                    .replace(/&/g, '&amp;')
+                    .replace(/</g, '&lt;')
+                    .replace(/>/g, '&gt;')
+                    .replace(/"/g, '&quot;')
+                    .replace(/'/g, '&#39;');
+            }
             function loadExperimentsFromStorage() {
                 const raw = localStorage.getItem(STORAGE_KEY_EXPERIMENTS);
                 if (!raw) return [];
                 try {
-                    return JSON.parse(raw);
+                    const parsed = JSON.parse(raw);
+                    return Array.isArray(parsed) ? parsed : [];
                 } catch (e) {
                     return [];
                 }
             }
+            function getBestObjective(exp) {
+                if (!Array.isArray(exp.trials) || exp.trials.length === 0) {
+                    return '—';
+                }
+                const maximize = exp.direction === 'maximize';
+                let best = Number(exp.trials[0].objective);
+                for (let i = 1; i < exp.trials.length; i++) {
+                    const val = Number(exp.trials[i].objective);
+                    if (maximize ? (val > best) : (val < best)) {
+                        best = val;
+                    }
+                }
+                return best.toPrecision(5);
+            }
             function updateDashboardStats() {
                 const experiments = loadExperimentsFromStorage();
                 const container = document.getElementById('dashboardStats');
+                const overview = document.getElementById('dashboardOverview');
                 if (!container) return;
                 const total = experiments.length;
                 const idle = experiments.filter(function(e) { return e.status === 'idle'; }).length;
                 const running = experiments.filter(function(e) { return e.status === 'running'; }).length;
                 const completed = experiments.filter(function(e) { return e.status === 'completed'; }).length;
-                container.innerHTML = 
-                    '<div class="stat-card">' +
-                        '<div class="stat-value">' + total + '</div>' +
-                        '<div class="stat-label">Total Experiments</div>' +
-                    '</div>' +
-                    '<div class="stat-card">' +
-                        '<div class="stat-value">' + idle + '</div>' +
-                        '<div class="stat-label">Idle</div>' +
-                    '</div>' +
-                    '<div class="stat-card">' +
-                        '<div class="stat-value">' + running + '</div>' +
-                        '<div class="stat-label">Running</div>' +
-                    '</div>' +
-                    '<div class="stat-card">' +
-                        '<div class="stat-value">' + completed + '</div>' +
-                        '<div class="stat-label">Completed</div>' +
-                    '</div>';
+                const totalTrials = experiments.reduce(function(acc, e) {
+                    return acc + (Array.isArray(e.trials) ? e.trials.length : 0);
+                }, 0);
+                container.innerHTML =
+                    '<div class="stat-card"><div class="stat-value">' + total + '</div><div class="stat-label">Total Experiments</div></div>' +
+                    '<div class="stat-card"><div class="stat-value">' + idle + '</div><div class="stat-label">Idle</div></div>' +
+                    '<div class="stat-card"><div class="stat-value">' + running + '</div><div class="stat-label">Running</div></div>' +
+                    '<div class="stat-card"><div class="stat-value">' + completed + '</div><div class="stat-label">Completed</div></div>' +
+                    '<div class="stat-card"><div class="stat-value">' + totalTrials + '</div><div class="stat-label">Total Trials</div></div>';
+                if (!overview) return;
+                if (experiments.length === 0) {
+                    overview.innerHTML = '<div class="empty-state">No experiments yet. Go to Experiments to create one.</div>';
+                    return;
+                }
+                const rows = experiments.map(function(exp) {
+                    const cfg = exp.config || {};
+                    const trialsCount = Array.isArray(exp.trials) ? exp.trials.length : 0;
+                    return '<tr>' +
+                        '<td>' + escapeHtml(exp.name) + '</td>' +
+                        '<td>' + escapeHtml(exp.status || 'idle') + '</td>' +
+                        '<td>' + escapeHtml((cfg.surrogate || 'council') + ' / ' + (cfg.acquisition || 'lbfgs')) + '</td>' +
+                        '<td>' + trialsCount + '</td>' +
+                        '<td>' + escapeHtml(exp.objective + ' (' + exp.direction + ')') + '</td>' +
+                        '<td><strong>' + escapeHtml(getBestObjective(exp)) + '</strong></td>' +
+                        '</tr>';
+                }).join('');
+                overview.innerHTML =
+                    '<h3 class="overview-heading">Experiments Summary</h3>' +
+                    '<div class="overview-card"><table class="trials-table">' +
+                    '<thead><tr><th>Name</th><th>Status</th><th>Optimizer</th><th>Trials</th><th>Objective</th><th>Best Value</th></tr></thead>' +
+                    '<tbody>' + rows + '</tbody></table></div>';
             }
             document.addEventListener('DOMContentLoaded', updateDashboardStats);
         })();
