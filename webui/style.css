@@ -615,7 +615,9 @@ details.experiment-card .experiment-body {
     width: 100%;
     height: auto;
     display: block;
-    cursor: crosshair;
+    cursor: grab;
+    touch-action: none;
+    user-select: none;
 }
 .surrogate-checkbox-grid {
     display: flex;

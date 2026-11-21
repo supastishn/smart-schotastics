@@ -30,9 +30,24 @@
         pointsPerAxis2D: 15,
         showBand: true,
         mode2D: '3d',
+        dragMode3D: 'rotate',
         yaw: -0.66,
-        pitch: 0.45
+        pitch: 0.52,
+        zoom3D: 1.0,
+        panX3D: 0,
+        panY3D: 0,
+        view1D: null,
+        view2D: null
     };
+    function resetGraphViewState() {
+        graphConfigState.yaw = -0.66;
+        graphConfigState.pitch = 0.52;
+        graphConfigState.zoom3D = 1.0;
+        graphConfigState.panX3D = 0;
+        graphConfigState.panY3D = 0;
+        graphConfigState.view1D = null;
+        graphConfigState.view2D = null;
+    }
     function escapeHtml(value) {
         return String(value)
             .replace(/&/g, '&amp;')
@@ -595,6 +610,8 @@
         editingTrialIndex = null;
         lastArbitraryPrediction = null;
         lastArbitraryQueryValues = null;
+        graphConfigState.view1D = null;
+        graphConfigState.view2D = null;
         if (cleanedParams.length > 2 && activeViewMode === 'graph') {
             activeViewMode = 'optimize';
         }
@@ -742,17 +759,7 @@
         const num = parseFloat(rawVal);
         return Number.isNaN(num) ? (parsedParam.lower + parsedParam.upper) * 0.5 : num;
     }
-    function draw1DSurrogateGraph(canvas, exp, parsedParam, axisPoints, predictions, showBand, hoverIndex) {
-        const ctx = canvas.getContext('2d');
-        const width = canvas.width;
-        const height = canvas.height;
-        ctx.clearRect(0, 0, width, height);
-        const padLeft = 64;
-        const padRight = 24;
-        const padTop = 22;
-        const padBottom = 42;
-        const plotW = width - padLeft - padRight;
-        const plotH = height - padTop - padBottom;
+    function compute1DBaseBounds(exp, axisPoints, predictions, showBand) {
         const allY = [];
         predictions.forEach(function(p) {
             if (showBand) {
@@ -775,16 +782,53 @@
             maxY += 1.0;
         }
         const yPad = (maxY - minY) * 0.08;
-        minY -= yPad;
-        maxY += yPad;
-        const minX = axisPoints[0].numeric;
-        const maxX = axisPoints[axisPoints.length - 1].numeric;
+        let minX = axisPoints[0].numeric;
+        let maxX = axisPoints[axisPoints.length - 1].numeric;
+        if (Math.abs(maxX - minX) < 1e-12) {
+            minX -= 0.5;
+            maxX += 0.5;
+        }
+        return {
+            minX: minX,
+            maxX: maxX,
+            minY: minY - yPad,
+            maxY: maxY + yPad
+        };
+    }
+    function compute2DBaseBounds(axisX, axisY) {
+        const nx = axisX.length;
+        const ny = axisY.length;
+        const stepX = nx > 1 ? Math.max(1e-12, (axisX[nx - 1].numeric - axisX[0].numeric) / (nx - 1)) : 1.0;
+        const stepY = ny > 1 ? Math.max(1e-12, (axisY[ny - 1].numeric - axisY[0].numeric) / (ny - 1)) : 1.0;
+        return {
+            minX: axisX[0].numeric - 0.5 * stepX,
+            maxX: axisX[nx - 1].numeric + 0.5 * stepX,
+            minY: axisY[0].numeric - 0.5 * stepY,
+            maxY: axisY[ny - 1].numeric + 0.5 * stepY
+        };
+    }
+    function draw1DSurrogateGraph(canvas, exp, parsedParam, axisPoints, predictions, showBand, hoverIndex, viewBounds) {
+        const ctx = canvas.getContext('2d');
+        const width = canvas.width;
+        const height = canvas.height;
+        ctx.clearRect(0, 0, width, height);
+        const padLeft = 64;
+        const padRight = 24;
+        const padTop = 22;
+        const padBottom = 42;
+        const plotW = width - padLeft - padRight;
+        const plotH = height - padTop - padBottom;
+        const minX = viewBounds.minX;
+        const maxX = viewBounds.maxX;
+        const minY = viewBounds.minY;
+        const maxY = viewBounds.maxY;
         const spanX = Math.max(1e-12, maxX - minX);
+        const spanY = Math.max(1e-12, maxY - minY);
         function px(xVal) {
             return padLeft + ((xVal - minX) / spanX) * plotW;
         }
         function py(yVal) {
-            return padTop + (1.0 - (yVal - minY) / (maxY - minY)) * plotH;
+            return padTop + (1.0 - (yVal - minY) / spanY) * plotH;
         }
         ctx.fillStyle = '#faf9f5';
         ctx.fillRect(padLeft, padTop, plotW, plotH);
@@ -796,29 +840,49 @@
             ctx.moveTo(padLeft, gy);
             ctx.lineTo(padLeft + plotW, gy);
             ctx.stroke();
-            const labelVal = maxY - (g / 4) * (maxY - minY);
+            const labelVal = maxY - (g / 4) * spanY;
             ctx.fillStyle = '#716f64';
             ctx.font = '11px sans-serif';
             ctx.textAlign = 'right';
             ctx.fillText(labelVal.toPrecision(3), padLeft - 8, gy + 4);
         }
-        const xTicks = Math.min(6, axisPoints.length);
-        for (let t = 0; t < xTicks; t++) {
-            const idx = xTicks === 1 ? 0 : Math.round((t / (xTicks - 1)) * (axisPoints.length - 1));
-            const pt = axisPoints[idx];
-            const gx = px(pt.numeric);
-            ctx.strokeStyle = '#ece9dc';
-            ctx.beginPath();
-            ctx.moveTo(gx, padTop);
-            ctx.lineTo(gx, padTop + plotH);
-            ctx.stroke();
-            ctx.fillStyle = '#716f64';
-            ctx.font = '11px sans-serif';
-            ctx.textAlign = 'center';
-            ctx.fillText(pt.label, gx, padTop + plotH + 16);
+        if (parsedParam.type === 'categorical') {
+            for (let i = 0; i < axisPoints.length; i++) {
+                const pt = axisPoints[i];
+                if (pt.numeric < minX - 0.05 || pt.numeric > maxX + 0.05) {
+                    continue;
+                }
+                const gx = px(pt.numeric);
+                ctx.strokeStyle = '#ece9dc';
+                ctx.beginPath();
+                ctx.moveTo(gx, padTop);
+                ctx.lineTo(gx, padTop + plotH);
+                ctx.stroke();
+                ctx.fillStyle = '#716f64';
+                ctx.font = '11px sans-serif';
+                ctx.textAlign = 'center';
+                ctx.fillText(pt.label, gx, padTop + plotH + 16);
+            }
+        } else {
+            const xTickCount = 6;
+            for (let t = 0; t < xTickCount; t++) {
+                const tickVal = minX + (t / (xTickCount - 1)) * spanX;
+                const gx = px(tickVal);
+                ctx.strokeStyle = '#ece9dc';
+                ctx.beginPath();
+                ctx.moveTo(gx, padTop);
+                ctx.lineTo(gx, padTop + plotH);
+                ctx.stroke();
+                ctx.fillStyle = '#716f64';
+                ctx.font = '11px sans-serif';
+                ctx.textAlign = 'center';
+                ctx.fillText(Number(tickVal.toPrecision(4)).toString(), gx, padTop + plotH + 16);
+            }
         }
-        ctx.strokeStyle = '#aca899';
-        ctx.strokeRect(padLeft, padTop, plotW, plotH);
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(padLeft, padTop, plotW, plotH);
+        ctx.clip();
         if (showBand) {
             ctx.fillStyle = 'rgba(49, 106, 197, 0.16)';
             ctx.beginPath();
@@ -879,6 +943,10 @@
             ctx.fill();
             ctx.stroke();
         });
+        ctx.restore();
+        ctx.strokeStyle = '#aca899';
+        ctx.lineWidth = 1;
+        ctx.strokeRect(padLeft, padTop, plotW, plotH);
         ctx.fillStyle = '#333333';
         ctx.font = '12px sans-serif';
         ctx.textAlign = 'center';
@@ -889,7 +957,7 @@
         ctx.fillText(exp.objective, 0, 0);
         ctx.restore();
     }
-    function draw2DHeatmapGraph(canvas, exp, pX, pY, axisX, axisY, gridPredictions, hoverCell) {
+    function draw2DHeatmapGraph(canvas, exp, pX, pY, axisX, axisY, gridPredictions, hoverCell, viewBounds) {
         const ctx = canvas.getContext('2d');
         const width = canvas.width;
         const height = canvas.height;
@@ -902,6 +970,20 @@
         const plotH = height - padTop - padBottom;
         const nx = axisX.length;
         const ny = axisY.length;
+        const stepX = nx > 1 ? Math.max(1e-12, (axisX[nx - 1].numeric - axisX[0].numeric) / (nx - 1)) : 1.0;
+        const stepY = ny > 1 ? Math.max(1e-12, (axisY[ny - 1].numeric - axisY[0].numeric) / (ny - 1)) : 1.0;
+        const minX = viewBounds.minX;
+        const maxX = viewBounds.maxX;
+        const minY = viewBounds.minY;
+        const maxY = viewBounds.maxY;
+        const spanX = Math.max(1e-12, maxX - minX);
+        const spanY = Math.max(1e-12, maxY - minY);
+        function px(xVal) {
+            return padLeft + ((xVal - minX) / spanX) * plotW;
+        }
+        function py(yVal) {
+            return padTop + (1.0 - (yVal - minY) / spanY) * plotH;
+        }
         let minZ = Infinity;
         let maxZ = -Infinity;
         gridPredictions.forEach(function(p) {
@@ -912,60 +994,99 @@
             minZ -= 1.0;
             maxZ += 1.0;
         }
-        const cellW = plotW / nx;
-        const cellH = plotH / ny;
+        ctx.fillStyle = '#faf9f5';
+        ctx.fillRect(padLeft, padTop, plotW, plotH);
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(padLeft, padTop, plotW, plotH);
+        ctx.clip();
         for (let ix = 0; ix < nx; ix++) {
+            const cx0 = axisX[ix].numeric - 0.5 * stepX;
+            const cx1 = axisX[ix].numeric + 0.5 * stepX;
+            const sx0 = px(cx0);
+            const sx1 = px(cx1);
+            if (sx1 < padLeft || sx0 > padLeft + plotW) {
+                continue;
+            }
+            const rx0 = Math.floor(sx0);
+            const rx1 = Math.ceil(sx1);
             for (let iy = 0; iy < ny; iy++) {
+                const cy0 = axisY[iy].numeric - 0.5 * stepY;
+                const cy1 = axisY[iy].numeric + 0.5 * stepY;
+                const sy0 = py(cy1);
+                const sy1 = py(cy0);
+                if (sy1 < padTop || sy0 > padTop + plotH) {
+                    continue;
+                }
+                const ry0 = Math.floor(sy0);
+                const ry1 = Math.ceil(sy1);
                 const pred = gridPredictions[ix * ny + iy];
                 const t = (pred.mean - minZ) / (maxZ - minZ);
                 ctx.fillStyle = interpolateColorForRatio(t);
-                const xPos = padLeft + ix * cellW;
-                const yPos = padTop + (ny - 1 - iy) * cellH;
-                ctx.fillRect(xPos, yPos, Math.ceil(cellW), Math.ceil(cellH));
+                ctx.fillRect(rx0, ry0, Math.max(1, rx1 - rx0), Math.max(1, ry1 - ry0));
                 if (hoverCell && hoverCell.ix === ix && hoverCell.iy === iy) {
                     ctx.strokeStyle = '#000000';
                     ctx.lineWidth = 2;
-                    ctx.strokeRect(xPos, yPos, cellW, cellH);
+                    ctx.strokeRect(sx0, sy0, sx1 - sx0, sy1 - sy0);
                 }
             }
         }
-        ctx.strokeStyle = '#aca899';
-        ctx.lineWidth = 1;
-        ctx.strokeRect(padLeft, padTop, plotW, plotH);
-        const minX = axisX[0].numeric;
-        const spanX = Math.max(1e-12, axisX[nx - 1].numeric - minX);
-        const minY = axisY[0].numeric;
-        const spanY = Math.max(1e-12, axisY[ny - 1].numeric - minY);
         (exp.trials || []).forEach(function(trial) {
             const tx = encodeSingleTrialNumericValue(trial.params ? trial.params[pX.name] : undefined, pX);
             const ty = encodeSingleTrialNumericValue(trial.params ? trial.params[pY.name] : undefined, pY);
-            const px = padLeft + ((tx - minX) / spanX) * plotW;
-            const py = padTop + (1.0 - (ty - minY) / spanY) * plotH;
+            const dotX = px(tx);
+            const dotY = py(ty);
             ctx.fillStyle = '#ffffff';
             ctx.strokeStyle = '#000000';
             ctx.lineWidth = 1.5;
             ctx.beginPath();
-            ctx.arc(px, py, 4.5, 0, Math.PI * 2);
+            ctx.arc(dotX, dotY, 4.5, 0, Math.PI * 2);
             ctx.fill();
             ctx.stroke();
         });
-        const xTicks = Math.min(5, nx);
-        for (let i = 0; i < xTicks; i++) {
-            const idx = xTicks === 1 ? 0 : Math.round((i / (xTicks - 1)) * (nx - 1));
-            const cx = padLeft + (idx + 0.5) * cellW;
-            ctx.fillStyle = '#716f64';
-            ctx.font = '11px sans-serif';
-            ctx.textAlign = 'center';
-            ctx.fillText(axisX[idx].label, cx, padTop + plotH + 16);
+        ctx.restore();
+        ctx.strokeStyle = '#aca899';
+        ctx.lineWidth = 1;
+        ctx.strokeRect(padLeft, padTop, plotW, plotH);
+        if (pX.type === 'categorical') {
+            for (let i = 0; i < nx; i++) {
+                if (axisX[i].numeric < minX || axisX[i].numeric > maxX) {
+                    continue;
+                }
+                ctx.fillStyle = '#716f64';
+                ctx.font = '11px sans-serif';
+                ctx.textAlign = 'center';
+                ctx.fillText(axisX[i].label, px(axisX[i].numeric), padTop + plotH + 16);
+            }
+        } else {
+            const xTickCount = 5;
+            for (let i = 0; i < xTickCount; i++) {
+                const tickVal = minX + (i / (xTickCount - 1)) * spanX;
+                ctx.fillStyle = '#716f64';
+                ctx.font = '11px sans-serif';
+                ctx.textAlign = 'center';
+                ctx.fillText(Number(tickVal.toPrecision(4)).toString(), px(tickVal), padTop + plotH + 16);
+            }
         }
-        const yTicks = Math.min(5, ny);
-        for (let j = 0; j < yTicks; j++) {
-            const idx = yTicks === 1 ? 0 : Math.round((j / (yTicks - 1)) * (ny - 1));
-            const cy = padTop + (ny - 1 - idx + 0.5) * cellH;
-            ctx.fillStyle = '#716f64';
-            ctx.font = '11px sans-serif';
-            ctx.textAlign = 'right';
-            ctx.fillText(axisY[idx].label, padLeft - 8, cy + 4);
+        if (pY.type === 'categorical') {
+            for (let j = 0; j < ny; j++) {
+                if (axisY[j].numeric < minY || axisY[j].numeric > maxY) {
+                    continue;
+                }
+                ctx.fillStyle = '#716f64';
+                ctx.font = '11px sans-serif';
+                ctx.textAlign = 'right';
+                ctx.fillText(axisY[j].label, padLeft - 8, py(axisY[j].numeric) + 4);
+            }
+        } else {
+            const yTickCount = 5;
+            for (let j = 0; j < yTickCount; j++) {
+                const tickVal = minY + (j / (yTickCount - 1)) * spanY;
+                ctx.fillStyle = '#716f64';
+                ctx.font = '11px sans-serif';
+                ctx.textAlign = 'right';
+                ctx.fillText(Number(tickVal.toPrecision(4)).toString(), padLeft - 8, py(tickVal) + 4);
+            }
         }
         const barX = padLeft + plotW + 18;
         const barW = 16;
@@ -991,7 +1112,7 @@
         ctx.fillText(pY.name, 0, 0);
         ctx.restore();
     }
-    function draw3DSurfaceGraph(canvas, exp, pX, pY, axisX, axisY, gridPredictions, yaw, pitch) {
+    function draw3DSurfaceGraph(canvas, exp, pX, pY, axisX, axisY, gridPredictions, yaw, pitch, zoom3D, panX3D, panY3D) {
         const ctx = canvas.getContext('2d');
         const width = canvas.width;
         const height = canvas.height;
@@ -1024,17 +1145,17 @@
         const sinYaw = Math.sin(yaw);
         const cosPitch = Math.cos(pitch);
         const sinPitch = Math.sin(pitch);
-        const scale = Math.min(width, height) * 0.38;
-        const centerX = width * 0.5;
-        const centerY = height * 0.53;
+        const scale = Math.min(width, height) * 0.38 * Math.max(0.25, zoom3D || 1.0);
+        const centerX = width * 0.5 + (panX3D || 0);
+        const centerY = height * 0.53 + (panY3D || 0);
         function projectPoint(nxVal, nyVal, nzVal) {
             const x = nxVal - 0.5;
             const y = nyVal - 0.5;
             const z = nzVal - 0.5;
-            const x1 = x * cosYaw - y * sinYaw;
-            const y1 = x * sinYaw + y * cosYaw;
-            const y2 = y1 * cosPitch - z * sinPitch;
-            const z2 = y1 * sinPitch + z * cosPitch;
+            const x1 = x * cosYaw + y * sinYaw;
+            const y1 = -x * sinYaw + y * cosYaw;
+            const y2 = y1 * cosPitch + z * sinPitch;
+            const z2 = -y1 * sinPitch + z * cosPitch;
             const persp = 3.2 / (3.2 - y2 * 0.65);
             return {
                 x: centerX + x1 * scale * persp,
@@ -1042,30 +1163,48 @@
                 depth: y2
             };
         }
-        const corners = [
+        const bottomCorners = [
             projectPoint(0, 0, 0),
             projectPoint(1, 0, 0),
             projectPoint(1, 1, 0),
-            projectPoint(0, 1, 0),
-            projectPoint(0, 0, 1)
+            projectPoint(0, 1, 0)
         ];
-        ctx.strokeStyle = '#9b9789';
-        ctx.lineWidth = 1.2;
+        const topCorners = [
+            projectPoint(0, 0, 1),
+            projectPoint(1, 0, 1),
+            projectPoint(1, 1, 1),
+            projectPoint(0, 1, 1)
+        ];
+        ctx.strokeStyle = '#d5d1c4';
+        ctx.lineWidth = 1;
         ctx.beginPath();
-        ctx.moveTo(corners[0].x, corners[0].y);
-        ctx.lineTo(corners[1].x, corners[1].y);
-        ctx.lineTo(corners[2].x, corners[2].y);
-        ctx.lineTo(corners[3].x, corners[3].y);
+        ctx.moveTo(topCorners[0].x, topCorners[0].y);
+        ctx.lineTo(topCorners[1].x, topCorners[1].y);
+        ctx.lineTo(topCorners[2].x, topCorners[2].y);
+        ctx.lineTo(topCorners[3].x, topCorners[3].y);
         ctx.closePath();
-        ctx.moveTo(corners[0].x, corners[0].y);
-        ctx.lineTo(corners[4].x, corners[4].y);
+        for (let c = 1; c < 4; c++) {
+            ctx.moveTo(bottomCorners[c].x, bottomCorners[c].y);
+            ctx.lineTo(topCorners[c].x, topCorners[c].y);
+        }
+        ctx.stroke();
+        ctx.strokeStyle = '#9b9789';
+        ctx.lineWidth = 1.4;
+        ctx.beginPath();
+        ctx.moveTo(bottomCorners[0].x, bottomCorners[0].y);
+        ctx.lineTo(bottomCorners[1].x, bottomCorners[1].y);
+        ctx.lineTo(bottomCorners[2].x, bottomCorners[2].y);
+        ctx.lineTo(bottomCorners[3].x, bottomCorners[3].y);
+        ctx.closePath();
+        ctx.moveTo(bottomCorners[0].x, bottomCorners[0].y);
+        ctx.lineTo(topCorners[0].x, topCorners[0].y);
         ctx.stroke();
         const projectedGrid = [];
         for (let ix = 0; ix < nx; ix++) {
             projectedGrid[ix] = [];
-            const u = (axisX[ix].numeric - minX) / spanX;
+            const u = nx > 1 ? (axisX[ix].numeric - minX) / spanX : 0.5;
             for (let iy = 0; iy < ny; iy++) {
-                const v = (axisY[iy].numeric - minY) / spanY;
+                const v = ny > 1 ? (axisY[iy].numeric - minY) / spanY : 0.5;
                 const pred = gridPredictions[ix * ny + iy];
                 const w = (pred.mean - minZ) / spanZ;
                 const proj = projectPoint(u, v, w);
@@ -1094,7 +1233,7 @@
         });
         quads.forEach(function(q) {
             ctx.fillStyle = interpolateColorForRatio(q.ratio);
-            ctx.globalAlpha = 0.72;
+            ctx.globalAlpha = 0.74;
             ctx.beginPath();
             ctx.moveTo(q.pts[0].x, q.pts[0].y);
             ctx.lineTo(q.pts[1].x, q.pts[1].y);
@@ -1111,8 +1250,8 @@
             const tx = encodeSingleTrialNumericValue(trial.params ? trial.params[pX.name] : undefined, pX);
             const ty = encodeSingleTrialNumericValue(trial.params ? trial.params[pY.name] : undefined, pY);
             const tz = Number(trial.objective);
-            const u = (tx - minX) / spanX;
-            const v = (ty - minY) / spanY;
+            const u = nx > 1 ? (tx - minX) / spanX : 0.5;
+            const v = ny > 1 ? (ty - minY) / spanY : 0.5;
             const w = (tz - minZ) / spanZ;
             const proj = projectPoint(u, v, w);
             ctx.fillStyle = '#000000';
@@ -1123,19 +1262,23 @@
             ctx.fill();
             ctx.stroke();
         });
-        const xAxisMid = projectPoint(0.5, 0, 0);
-        const yAxisMid = projectPoint(0, 0.5, 0);
-        const zAxisTop = projectPoint(0, 0, 1.08);
+        const xAxisMid = projectPoint(0.5, -0.06, -0.04);
+        const yAxisMid = projectPoint(-0.06, 0.5, -0.04);
+        const zAxisTop = projectPoint(-0.04, -0.04, 1.08);
         ctx.fillStyle = '#222222';
         ctx.font = 'bold 12px sans-serif';
         ctx.textAlign = 'center';
-        ctx.fillText(pX.name + ' [' + axisX[0].label + ' .. ' + axisX[nx - 1].label + ']', xAxisMid.x, xAxisMid.y + 18);
-        ctx.fillText(pY.name + ' [' + axisY[0].label + ' .. ' + axisY[ny - 1].label + ']', yAxisMid.x, yAxisMid.y + 18);
+        ctx.fillText(pX.name + ' [' + axisX[0].label + ' .. ' + axisX[nx - 1].label + ']', xAxisMid.x, xAxisMid.y + 14);
+        ctx.fillText(pY.name + ' [' + axisY[0].label + ' .. ' + axisY[ny - 1].label + ']', yAxisMid.x, yAxisMid.y + 14);
         ctx.fillText(exp.objective, zAxisTop.x, zAxisTop.y - 6);
         ctx.font = '11px sans-serif';
         ctx.textAlign = 'left';
         ctx.fillStyle = '#555555';
-        ctx.fillText('Drag canvas to rotate 3D surface | Z range: [' + minZ.toPrecision(4) + ', ' + maxZ.toPrecision(4) + ']', 12, 18);
+        ctx.fillText(
+            'Zoom: ' + Math.round((zoom3D || 1.0) * 100) + '% | Z range: [' + minZ.toPrecision(4) + ', ' + maxZ.toPrecision(4) + ']',
+            12,
+            18
+        );
     }
     function buildParamControlElement(param, prefillVal, inputClassName) {
         const parsed = window.OptimaEngine.parseParamConfig(param);
@@ -1286,7 +1429,8 @@
         controls.appendChild(pointsGroup);
         let bandCheckbox = null;
         let modeSelect = null;
-        let resetAngleBtn = null;
+        let dragModeGroup = null;
+        let dragModeSelect = null;
         if (dim === 1) {
             const bandGroup = document.createElement('label');
             bandGroup.className = 'graph-checkbox-label';
@@ -1316,12 +1460,42 @@
             modeGroup.appendChild(modeLabel);
             modeGroup.appendChild(modeSelect);
             controls.appendChild(modeGroup);
-            resetAngleBtn = document.createElement('button');
-            resetAngleBtn.type = 'button';
-            resetAngleBtn.className = 'btn btn-compact';
-            resetAngleBtn.textContent = 'Reset Angle';
-            controls.appendChild(resetAngleBtn);
+            dragModeGroup = document.createElement('div');
+            dragModeGroup.className = 'graph-control-item';
+            const dragModeLabel = document.createElement('label');
+            dragModeLabel.textContent = 'Drag';
+            dragModeSelect = document.createElement('select');
+            dragModeSelect.className = 'compact-select';
+            [
+                { value: 'rotate', label: 'Rotate Angle' },
+                { value: 'pan', label: 'Pan / Move' }
+            ].forEach(function(optDef) {
+                const opt = document.createElement('option');
+                opt.value = optDef.value;
+                opt.textContent = optDef.label;
+                if (graphConfigState.dragMode3D === optDef.value) opt.selected = true;
+                dragModeSelect.appendChild(opt);
+            });
+            dragModeGroup.appendChild(dragModeLabel);
+            dragModeGroup.appendChild(dragModeSelect);
+            dragModeGroup.hidden = graphConfigState.mode2D !== '3d';
+            controls.appendChild(dragModeGroup);
         }
+        const zoomInBtn = document.createElement('button');
+        zoomInBtn.type = 'button';
+        zoomInBtn.className = 'btn btn-compact';
+        zoomInBtn.textContent = 'Zoom +';
+        controls.appendChild(zoomInBtn);
+        const zoomOutBtn = document.createElement('button');
+        zoomOutBtn.type = 'button';
+        zoomOutBtn.className = 'btn btn-compact';
+        zoomOutBtn.textContent = 'Zoom -';
+        controls.appendChild(zoomOutBtn);
+        const resetViewBtn = document.createElement('button');
+        resetViewBtn.type = 'button';
+        resetViewBtn.className = 'btn btn-compact';
+        resetViewBtn.textContent = 'Reset View';
+        controls.appendChild(resetViewBtn);
         const refreshBtn = document.createElement('button');
         refreshBtn.type = 'button';
         refreshBtn.className = 'btn btn-primary btn-compact';
@@ -1331,8 +1505,10 @@
         const readout = document.createElement('div');
         readout.className = 'prediction-banner';
         readout.textContent = dim === 1
-            ? 'Hover over the graph to inspect interpolated equidistant surrogate predictions.'
-            : 'Drag the 3D surface to rotate, or switch to 2D Heatmap and hover cells.';
+            ? 'Drag to pan, scroll wheel to zoom, hover to inspect predictions.'
+            : (graphConfigState.mode2D === 'heatmap'
+                ? 'Drag to pan, scroll wheel to zoom, hover cells to inspect predictions.'
+                : 'Drag to rotate angle, Shift+drag or Right-drag (or Drag: Pan) to pan, scroll wheel to zoom.');
         graphPanel.appendChild(readout);
         const canvasWrap = document.createElement('div');
         canvasWrap.className = 'chart-container';
@@ -1347,6 +1523,147 @@
         let currentAxisY = null;
         let currentPredictions = null;
         let currentParsedParams = null;
+        let baseBounds1D = null;
+        let baseBounds2D = null;
+        let hasCustomView1D = false;
+        let hasCustomView2D = false;
+        let lastHover1DIndex = -1;
+        let lastHover2DCell = null;
+        function syncCanvasCursor() {
+            if (dim === 1 || graphConfigState.mode2D === 'heatmap' || graphConfigState.dragMode3D === 'pan') {
+                canvas.style.cursor = 'grab';
+            } else {
+                canvas.style.cursor = 'move';
+            }
+        }
+        function getCanvasMetrics(e) {
+            const rect = canvas.getBoundingClientRect();
+            const scaleX = canvas.width / Math.max(1, rect.width);
+            const scaleY = canvas.height / Math.max(1, rect.height);
+            return {
+                scaleX: scaleX,
+                scaleY: scaleY,
+                cx: (e.clientX - rect.left) * scaleX,
+                cy: (e.clientY - rect.top) * scaleY
+            };
+        }
+        function redrawCurrentGraph() {
+            if (!currentPredictions || !currentParsedParams) {
+                return;
+            }
+            if (dim === 1) {
+                if (!graphConfigState.view1D && baseBounds1D) {
+                    graphConfigState.view1D = Object.assign({}, baseBounds1D);
+                }
+                draw1DSurrogateGraph(
+                    canvas,
+                    exp,
+                    currentParsedParams[0],
+                    currentAxisX,
+                    currentPredictions,
+                    graphConfigState.showBand,
+                    lastHover1DIndex,
+                    graphConfigState.view1D
+                );
+            } else if (graphConfigState.mode2D === 'heatmap') {
+                if (!graphConfigState.view2D && baseBounds2D) {
+                    graphConfigState.view2D = Object.assign({}, baseBounds2D);
+                }
+                draw2DHeatmapGraph(
+                    canvas,
+                    exp,
+                    currentParsedParams[0],
+                    currentParsedParams[1],
+                    currentAxisX,
+                    currentAxisY,
+                    currentPredictions,
+                    lastHover2DCell,
+                    graphConfigState.view2D
+                );
+            } else {
+                draw3DSurfaceGraph(
+                    canvas,
+                    exp,
+                    currentParsedParams[0],
+                    currentParsedParams[1],
+                    currentAxisX,
+                    currentAxisY,
+                    currentPredictions,
+                    graphConfigState.yaw,
+                    graphConfigState.pitch,
+                    graphConfigState.zoom3D,
+                    graphConfigState.panX3D,
+                    graphConfigState.panY3D
+                );
+            }
+        }
+        function zoom1DAt(cx, cy, spanFactor) {
+            if (!graphConfigState.view1D || !baseBounds1D) {
+                return;
+            }
+            const padLeft = 64;
+            const padRight = 24;
+            const padTop = 22;
+            const padBottom = 42;
+            const plotW = canvas.width - padLeft - padRight;
+            const plotH = canvas.height - padTop - padBottom;
+            const rx = Math.max(0, Math.min(1, (cx - padLeft) / Math.max(1, plotW)));
+            const ry = Math.max(0, Math.min(1, 1.0 - (cy - padTop) / Math.max(1, plotH)));
+            const v = graphConfigState.view1D;
+            const spanX = Math.max(1e-12, v.maxX - v.minX);
+            const spanY = Math.max(1e-12, v.maxY - v.minY);
+            const baseSpanX = Math.max(1e-12, baseBounds1D.maxX - baseBounds1D.minX);
+            const baseSpanY = Math.max(1e-12, baseBounds1D.maxY - baseBounds1D.minY);
+            const anchorX = v.minX + rx * spanX;
+            const anchorY = v.minY + ry * spanY;
+            const newSpanX = Math.max(baseSpanX * 0.005, Math.min(baseSpanX * 50.0, spanX * spanFactor));
+            const newSpanY = Math.max(baseSpanY * 0.005, Math.min(baseSpanY * 50.0, spanY * spanFactor));
+            v.minX = anchorX - rx * newSpanX;
+            v.maxX = v.minX + newSpanX;
+            v.minY = anchorY - ry * newSpanY;
+            v.maxY = v.minY + newSpanY;
+            hasCustomView1D = true;
+            redrawCurrentGraph();
+        }
+        function zoom2DAt(cx, cy, spanFactor) {
+            if (!graphConfigState.view2D || !baseBounds2D) {
+                return;
+            }
+            const padLeft = 72;
+            const padRight = 100;
+            const padTop = 22;
+            const padBottom = 46;
+            const plotW = canvas.width - padLeft - padRight;
+            const plotH = canvas.height - padTop - padBottom;
+            const rx = Math.max(0, Math.min(1, (cx - padLeft) / Math.max(1, plotW)));
+            const ry = Math.max(0, Math.min(1, 1.0 - (cy - padTop) / Math.max(1, plotH)));
+            const v = graphConfigState.view2D;
+            const spanX = Math.max(1e-12, v.maxX - v.minX);
+            const spanY = Math.max(1e-12, v.maxY - v.minY);
+            const baseSpanX = Math.max(1e-12, baseBounds2D.maxX - baseBounds2D.minX);
+            const baseSpanY = Math.max(1e-12, baseBounds2D.maxY - baseBounds2D.minY);
+            const anchorX = v.minX + rx * spanX;
+            const anchorY = v.minY + ry * spanY;
+            const newSpanX = Math.max(baseSpanX * 0.02, Math.min(baseSpanX * 40.0, spanX * spanFactor));
+            const newSpanY = Math.max(baseSpanY * 0.02, Math.min(baseSpanY * 40.0, spanY * spanFactor));
+            v.minX = anchorX - rx * newSpanX;
+            v.maxX = v.minX + newSpanX;
+            v.minY = anchorY - ry * newSpanY;
+            v.maxY = v.minY + newSpanY;
+            hasCustomView2D = true;
+            redrawCurrentGraph();
+        }
+        function zoom3DAt(cx, cy, scaleFactor) {
+            const oldZoom = graphConfigState.zoom3D || 1.0;
+            const newZoom = Math.max(0.25, Math.min(12.0, oldZoom * scaleFactor));
+            const ratio = newZoom / oldZoom;
+            const baseCenterX = canvas.width * 0.5;
+            const baseCenterY = canvas.height * 0.53;
+            graphConfigState.panX3D = cx - baseCenterX - (cx - baseCenterX - graphConfigState.panX3D) * ratio;
+            graphConfigState.panY3D = cy - baseCenterY - (cy - baseCenterY - graphConfigState.panY3D) * ratio;
+            graphConfigState.zoom3D = newZoom;
+            redrawCurrentGraph();
+        }
         function computeAndDraw() {
             if (!window.OptimaEngine.isReady()) {
                 readout.textContent = 'WebAssembly module (optima.js / optima.wasm) is not loaded. Build it with ./webui/build_wasm.sh to render surrogate predictions.';
@@ -1365,13 +1682,21 @@
                 if (!currentPredictions) {
                     return;
                 }
-                draw1DSurrogateGraph(canvas, exp, parsedParams[0], currentAxisX, currentPredictions, graphConfigState.showBand, -1);
-                readout.textContent = 'Plotted ' + currentAxisX.length + ' equidistant points using ' + formatSurrogateLabel(exp.config) + ' (length scale ' + exp.config.lengthScale + '). Red dots show recorded trials.';
+                baseBounds1D = compute1DBaseBounds(exp, currentAxisX, currentPredictions, graphConfigState.showBand);
+                if (!graphConfigState.view1D || !hasCustomView1D) {
+                    graphConfigState.view1D = Object.assign({}, baseBounds1D);
+                }
+                lastHover1DIndex = -1;
+                redrawCurrentGraph();
+                readout.textContent = 'Plotted ' + currentAxisX.length + ' equidistant points using ' + formatSurrogateLabel(exp.config) + ' (length scale ' + exp.config.lengthScale + '). Drag to pan, scroll to zoom.';
             } else {
                 const count = Math.max(2, Math.min(45, parseInt(pointsInput.value, 10) || 15));
                 graphConfigState.pointsPerAxis2D = count;
                 pointsInput.value = String(count);
                 graphConfigState.mode2D = modeSelect.value;
+                if (dragModeGroup) {
+                    dragModeGroup.hidden = graphConfigState.mode2D !== '3d';
+                }
                 currentAxisX = buildEquidistantAxisValues(parsedParams[0], count);
                 currentAxisY = buildEquidistantAxisValues(parsedParams[1], count);
                 const queryList = [];
@@ -1384,13 +1709,17 @@
                 if (!currentPredictions) {
                     return;
                 }
-                if (graphConfigState.mode2D === 'heatmap') {
-                    draw2DHeatmapGraph(canvas, exp, parsedParams[0], parsedParams[1], currentAxisX, currentAxisY, currentPredictions, null);
-                } else {
-                    draw3DSurfaceGraph(canvas, exp, parsedParams[0], parsedParams[1], currentAxisX, currentAxisY, currentPredictions, graphConfigState.yaw, graphConfigState.pitch);
+                baseBounds2D = compute2DBaseBounds(currentAxisX, currentAxisY);
+                if (!graphConfigState.view2D || !hasCustomView2D) {
+                    graphConfigState.view2D = Object.assign({}, baseBounds2D);
                 }
-                readout.textContent = 'Evaluated ' + currentAxisX.length + ' x ' + currentAxisY.length + ' (' + queryList.length + ' equidistant grid points) using ' + formatSurrogateLabel(exp.config) + '.';
+                lastHover2DCell = null;
+                redrawCurrentGraph();
+                readout.textContent = graphConfigState.mode2D === 'heatmap'
+                    ? ('Evaluated ' + currentAxisX.length + ' x ' + currentAxisY.length + ' grid using ' + formatSurrogateLabel(exp.config) + '. Drag to pan, scroll to zoom, hover cells.')
+                    : ('Evaluated ' + currentAxisX.length + ' x ' + currentAxisY.length + ' surface using ' + formatSurrogateLabel(exp.config) + '. Drag to rotate, Shift/Right-drag (or Drag: Pan) to move, scroll to zoom.');
             }
+            syncCanvasCursor();
         }
         refreshBtn.addEventListener('click', computeAndDraw);
         pointsInput.addEventListener('change', computeAndDraw);
@@ -1400,74 +1729,213 @@
         if (modeSelect) {
             modeSelect.addEventListener('change', computeAndDraw);
         }
-        if (resetAngleBtn) {
-            resetAngleBtn.addEventListener('click', function() {
-                graphConfigState.yaw = -0.66;
-                graphConfigState.pitch = 0.45;
-                if (currentPredictions && graphConfigState.mode2D === '3d') {
-                    draw3DSurfaceGraph(canvas, exp, currentParsedParams[0], currentParsedParams[1], currentAxisX, currentAxisY, currentPredictions, graphConfigState.yaw, graphConfigState.pitch);
-                }
+        if (dragModeSelect) {
+            dragModeSelect.addEventListener('change', function() {
+                graphConfigState.dragMode3D = dragModeSelect.value;
+                syncCanvasCursor();
             });
         }
-        let dragging = false;
-        let lastX = 0;
-        let lastY = 0;
-        canvas.addEventListener('mousedown', function(e) {
-            if (dim === 2 && graphConfigState.mode2D === '3d') {
-                dragging = true;
-                lastX = e.clientX;
-                lastY = e.clientY;
+        zoomInBtn.addEventListener('click', function() {
+            if (!currentPredictions) return;
+            if (dim === 1) {
+                const plotW = canvas.width - 64 - 24;
+                const plotH = canvas.height - 22 - 42;
+                zoom1DAt(64 + plotW * 0.5, 22 + plotH * 0.5, 0.78);
+            } else if (graphConfigState.mode2D === 'heatmap') {
+                const plotW = canvas.width - 72 - 100;
+                const plotH = canvas.height - 22 - 46;
+                zoom2DAt(72 + plotW * 0.5, 22 + plotH * 0.5, 0.78);
+            } else {
+                zoom3DAt(canvas.width * 0.5, canvas.height * 0.53, 1.25);
             }
         });
-        window.addEventListener('mouseup', function() {
-            dragging = false;
+        zoomOutBtn.addEventListener('click', function() {
+            if (!currentPredictions) return;
+            if (dim === 1) {
+                const plotW = canvas.width - 64 - 24;
+                const plotH = canvas.height - 22 - 42;
+                zoom1DAt(64 + plotW * 0.5, 22 + plotH * 0.5, 1.0 / 0.78);
+            } else if (graphConfigState.mode2D === 'heatmap') {
+                const plotW = canvas.width - 72 - 100;
+                const plotH = canvas.height - 22 - 46;
+                zoom2DAt(72 + plotW * 0.5, 22 + plotH * 0.5, 1.0 / 0.78);
+            } else {
+                zoom3DAt(canvas.width * 0.5, canvas.height * 0.53, 1.0 / 1.25);
+            }
         });
-        canvas.addEventListener('mousemove', function(e) {
-            const rect = canvas.getBoundingClientRect();
-            const scaleX = canvas.width / Math.max(1, rect.width);
-            const scaleY = canvas.height / Math.max(1, rect.height);
-            const cx = (e.clientX - rect.left) * scaleX;
-            const cy = (e.clientY - rect.top) * scaleY;
-            if (dim === 1 && currentAxisX && currentPredictions) {
+        resetViewBtn.addEventListener('click', function() {
+            if (dim === 1) {
+                hasCustomView1D = false;
+                graphConfigState.view1D = baseBounds1D ? Object.assign({}, baseBounds1D) : null;
+            } else if (graphConfigState.mode2D === 'heatmap') {
+                hasCustomView2D = false;
+                graphConfigState.view2D = baseBounds2D ? Object.assign({}, baseBounds2D) : null;
+            } else {
+                graphConfigState.yaw = -0.66;
+                graphConfigState.pitch = 0.52;
+                graphConfigState.zoom3D = 1.0;
+                graphConfigState.panX3D = 0;
+                graphConfigState.panY3D = 0;
+            }
+            redrawCurrentGraph();
+        });
+        let dragAction = null;
+        let activePointerId = null;
+        let lastClientX = 0;
+        let lastClientY = 0;
+        canvas.addEventListener('contextmenu', function(e) {
+            e.preventDefault();
+        });
+        canvas.addEventListener('pointerdown', function(e) {
+            if (!currentPredictions) return;
+            e.preventDefault();
+            activePointerId = e.pointerId;
+            if (canvas.setPointerCapture) {
+                canvas.setPointerCapture(e.pointerId);
+            }
+            lastClientX = e.clientX;
+            lastClientY = e.clientY;
+            if (dim === 1) {
+                dragAction = 'pan1d';
+            } else if (graphConfigState.mode2D === 'heatmap') {
+                dragAction = 'pan2d';
+            } else {
+                const wantsPan = e.button === 2 || e.button === 1 || e.shiftKey || graphConfigState.dragMode3D === 'pan';
+                dragAction = wantsPan ? 'pan3d' : 'rotate3d';
+            }
+            canvas.style.cursor = 'grabbing';
+        });
+        function finishDrag(e) {
+            if (activePointerId !== null && e.pointerId !== activePointerId) {
+                return;
+            }
+            if (activePointerId !== null && canvas.hasPointerCapture && canvas.hasPointerCapture(activePointerId)) {
+                canvas.releasePointerCapture(activePointerId);
+            }
+            dragAction = null;
+            activePointerId = null;
+            syncCanvasCursor();
+        }
+        canvas.addEventListener('pointerup', finishDrag);
+        canvas.addEventListener('pointercancel', finishDrag);
+        canvas.addEventListener('pointermove', function(e) {
+            if (!currentPredictions || !currentParsedParams) {
+                return;
+            }
+            const metrics = getCanvasMetrics(e);
+            const dxCanvas = (e.clientX - lastClientX) * metrics.scaleX;
+            const dyCanvas = (e.clientY - lastClientY) * metrics.scaleY;
+            if (dragAction) {
+                lastClientX = e.clientX;
+                lastClientY = e.clientY;
+                if (dragAction === 'pan1d' && graphConfigState.view1D) {
+                    const plotW = canvas.width - 64 - 24;
+                    const plotH = canvas.height - 22 - 42;
+                    const v = graphConfigState.view1D;
+                    const deltaX = -(dxCanvas / Math.max(1, plotW)) * (v.maxX - v.minX);
+                    const deltaY = (dyCanvas / Math.max(1, plotH)) * (v.maxY - v.minY);
+                    v.minX += deltaX;
+                    v.maxX += deltaX;
+                    v.minY += deltaY;
+                    v.maxY += deltaY;
+                    hasCustomView1D = true;
+                    redrawCurrentGraph();
+                } else if (dragAction === 'pan2d' && graphConfigState.view2D) {
+                    const plotW = canvas.width - 72 - 100;
+                    const plotH = canvas.height - 22 - 46;
+                    const v = graphConfigState.view2D;
+                    const deltaX = -(dxCanvas / Math.max(1, plotW)) * (v.maxX - v.minX);
+                    const deltaY = (dyCanvas / Math.max(1, plotH)) * (v.maxY - v.minY);
+                    v.minX += deltaX;
+                    v.maxX += deltaX;
+                    v.minY += deltaY;
+                    v.maxY += deltaY;
+                    hasCustomView2D = true;
+                    redrawCurrentGraph();
+                } else if (dragAction === 'rotate3d') {
+                    graphConfigState.yaw += dxCanvas * 0.008;
+                    graphConfigState.pitch = Math.max(-1.55, Math.min(1.55, graphConfigState.pitch + dyCanvas * 0.008));
+                    redrawCurrentGraph();
+                } else if (dragAction === 'pan3d') {
+                    graphConfigState.panX3D += dxCanvas;
+                    graphConfigState.panY3D += dyCanvas;
+                    redrawCurrentGraph();
+                }
+                return;
+            }
+            const cx = metrics.cx;
+            const cy = metrics.cy;
+            if (dim === 1 && currentAxisX && graphConfigState.view1D) {
                 const padLeft = 64;
                 const padRight = 24;
+                const padTop = 22;
+                const padBottom = 42;
                 const plotW = canvas.width - padLeft - padRight;
-                const ratio = (cx - padLeft) / Math.max(1, plotW);
-                const idx = Math.max(0, Math.min(currentAxisX.length - 1, Math.round(ratio * (currentAxisX.length - 1))));
-                draw1DSurrogateGraph(canvas, exp, currentParsedParams[0], currentAxisX, currentPredictions, graphConfigState.showBand, idx);
-                const p = currentPredictions[idx];
-                readout.textContent = currentParsedParams[0].name + ' = ' + currentAxisX[idx].label +
-                    '  |  Predicted ' + exp.objective + ': ' + Number(p.mean).toPrecision(5) + ' ± ' + Number(p.stdDev).toPrecision(4);
-            } else if (dim === 2 && currentPredictions) {
-                if (graphConfigState.mode2D === '3d' && dragging) {
-                    const dx = e.clientX - lastX;
-                    const dy = e.clientY - lastY;
-                    lastX = e.clientX;
-                    lastY = e.clientY;
-                    graphConfigState.yaw += dx * 0.01;
-                    graphConfigState.pitch = Math.max(-1.35, Math.min(1.35, graphConfigState.pitch + dy * 0.01));
-                    draw3DSurfaceGraph(canvas, exp, currentParsedParams[0], currentParsedParams[1], currentAxisX, currentAxisY, currentPredictions, graphConfigState.yaw, graphConfigState.pitch);
-                } else if (graphConfigState.mode2D === 'heatmap') {
-                    const padLeft = 72;
-                    const padRight = 100;
-                    const padTop = 22;
-                    const padBottom = 46;
-                    const plotW = canvas.width - padLeft - padRight;
-                    const plotH = canvas.height - padTop - padBottom;
-                    const rx = (cx - padLeft) / Math.max(1, plotW);
-                    const ry = 1.0 - (cy - padTop) / Math.max(1, plotH);
-                    if (rx >= 0 && rx <= 1 && ry >= 0 && ry <= 1) {
-                        const ix = Math.max(0, Math.min(currentAxisX.length - 1, Math.floor(rx * currentAxisX.length)));
-                        const iy = Math.max(0, Math.min(currentAxisY.length - 1, Math.floor(ry * currentAxisY.length)));
-                        const pred = currentPredictions[ix * currentAxisY.length + iy];
-                        draw2DHeatmapGraph(canvas, exp, currentParsedParams[0], currentParsedParams[1], currentAxisX, currentAxisY, currentPredictions, { ix: ix, iy: iy });
-                        readout.textContent = currentParsedParams[0].name + ' = ' + currentAxisX[ix].label +
-                            ', ' + currentParsedParams[1].name + ' = ' + currentAxisY[iy].label +
+                const plotH = canvas.height - padTop - padBottom;
+                if (cx >= padLeft && cx <= padLeft + plotW && cy >= padTop && cy <= padTop + plotH) {
+                    const v = graphConfigState.view1D;
+                    const dataX = v.minX + ((cx - padLeft) / Math.max(1, plotW)) * (v.maxX - v.minX);
+                    let nearestIdx = 0;
+                    let nearestDist = Infinity;
+                    for (let i = 0; i < currentAxisX.length; i++) {
+                        const d = Math.abs(currentAxisX[i].numeric - dataX);
+                        if (d < nearestDist) {
+                            nearestDist = d;
+                            nearestIdx = i;
+                        }
+                    }
+                    lastHover1DIndex = nearestIdx;
+                    redrawCurrentGraph();
+                    const p = currentPredictions[nearestIdx];
+                    readout.textContent = currentParsedParams[0].name + ' = ' + currentAxisX[nearestIdx].label +
+                        '  |  Predicted ' + exp.objective + ': ' + Number(p.mean).toPrecision(5) + ' ± ' + Number(p.stdDev).toPrecision(4);
+                }
+            } else if (dim === 2 && graphConfigState.mode2D === 'heatmap' && graphConfigState.view2D) {
+                const padLeft = 72;
+                const padRight = 100;
+                const padTop = 22;
+                const padBottom = 46;
+                const plotW = canvas.width - padLeft - padRight;
+                const plotH = canvas.height - padTop - padBottom;
+                const rx = (cx - padLeft) / Math.max(1, plotW);
+                const ry = 1.0 - (cy - padTop) / Math.max(1, plotH);
+                if (rx >= 0 && rx <= 1 && ry >= 0 && ry <= 1) {
+                    const v = graphConfigState.view2D;
+                    const dataX = v.minX + rx * (v.maxX - v.minX);
+                    const dataY = v.minY + ry * (v.maxY - v.minY);
+                    const nx = currentAxisX.length;
+                    const ny = currentAxisY.length;
+                    const stepX = nx > 1 ? Math.max(1e-12, (currentAxisX[nx - 1].numeric - currentAxisX[0].numeric) / (nx - 1)) : 1.0;
+                    const stepY = ny > 1 ? Math.max(1e-12, (currentAxisY[ny - 1].numeric - currentAxisY[0].numeric) / (ny - 1)) : 1.0;
+                    const ixRaw = Math.round((dataX - currentAxisX[0].numeric) / stepX);
+                    const iyRaw = Math.round((dataY - currentAxisY[0].numeric) / stepY);
+                    if (ixRaw >= 0 && ixRaw < nx && iyRaw >= 0 && iyRaw < ny) {
+                        lastHover2DCell = { ix: ixRaw, iy: iyRaw };
+                        redrawCurrentGraph();
+                        const pred = currentPredictions[ixRaw * ny + iyRaw];
+                        readout.textContent = currentParsedParams[0].name + ' = ' + currentAxisX[ixRaw].label +
+                            ', ' + currentParsedParams[1].name + ' = ' + currentAxisY[iyRaw].label +
                             '  |  Predicted ' + exp.objective + ': ' + Number(pred.mean).toPrecision(5) + ' ± ' + Number(pred.stdDev).toPrecision(4);
+                    } else if (lastHover2DCell !== null) {
+                        lastHover2DCell = null;
+                        redrawCurrentGraph();
                     }
                 }
             }
         });
+        canvas.addEventListener('wheel', function(e) {
+            if (!currentPredictions) return;
+            e.preventDefault();
+            const metrics = getCanvasMetrics(e);
+            const zoomIn = e.deltaY < 0;
+            if (dim === 1) {
+                zoom1DAt(metrics.cx, metrics.cy, zoomIn ? 0.86 : 1.0 / 0.86);
+            } else if (graphConfigState.mode2D === 'heatmap') {
+                zoom2DAt(metrics.cx, metrics.cy, zoomIn ? 0.86 : 1.0 / 0.86);
+            } else {
+                zoom3DAt(metrics.cx, metrics.cy, zoomIn ? 1.15 : 1.0 / 1.15);
+            }
+        }, { passive: false });
         computeAndDraw();
     }
     function renderActiveExperiment() {
@@ -2080,6 +2548,7 @@
         activeViewMode = 'optimize';
         lastArbitraryPrediction = null;
         lastArbitraryQueryValues = null;
+        resetGraphViewState();
         const targetUrl = window.location.pathname + '?exp=' + encodeURIComponent(id);
         if (window.location.pathname + window.location.search !== targetUrl) {
             window.history.replaceState(null, '', targetUrl);
@@ -2094,6 +2563,7 @@
         activeViewMode = 'optimize';
         lastArbitraryPrediction = null;
         lastArbitraryQueryValues = null;
+        resetGraphViewState();
         closeEditExperimentMenu();
         if (window.location.search) {
             window.history.replaceState(null, '', window.location.pathname);
